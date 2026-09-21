@@ -18,3 +18,5 @@ captures/
 .cache/
 toolchain/
 out/
+# local kotlinc build output used by tools/localcheck.sh
+build-local/

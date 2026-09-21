@@ -108,6 +108,25 @@ jobs:
           set -o pipefail
           gradle :engine:engineSelfTest --args="/tmp/openwrt-real.bin" --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
 
+      - name: Summarize what the engine made of the real images
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 - <<'PYSUM'
+          import re
+          try:
+              lines = open('ci-engine.log', errors='replace').read().splitlines()
+          except OSError:
+              lines = []
+          keep = []
+          for i, l in enumerate(lines):
+              if 'real image' in l or 'self-test:' in l or '[FAIL]' in l:
+                  keep.extend(lines[i:i + 6])
+          keep = keep[:80]
+          open('/tmp/summary.txt', 'w').write("\n".join(keep)[:12000])
+          print("\n".join(keep))
+          PYSUM
+
       - name: Build debug APK
         run: |
           set -o pipefail
@@ -142,6 +161,9 @@ jobs:
           gh release create "$TAG" \
             --title "FlashGuard APK build ${{ github.run_number }}" \
             --notes "Automated build of ${{ github.sha }} (${{ github.ref_name }}).
+
+          What the engine said about the test images:
+          $(cat /tmp/summary.txt 2>/dev/null || echo 'n/a')
           Debug APK is directly installable; the release APK is signed with a throwaway CI key (uninstall any older FlashGuard first)." \
             dist/*.apk || true
           gh release upload "$TAG" dist/*.apk --clobber
@@ -189,3 +211,21 @@ jobs:
           PYSQL
           gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true
         continue-on-error: true
+
+      - name: Post engine summary on the commit
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - "$GITHUB_SHA" <<'PYSUM'
+          import sys
+          sha = sys.argv[1]
+          try:
+              summary = open('/tmp/summary.txt', errors='replace').read()
+          except OSError:
+              summary = 'no summary produced'
+          body = "Engine summary for %s\n\n```\n%s\n```\n" % (sha, summary[:12000])
+          open('/tmp/body.txt', 'w').write(body[:60000])
+          PYSUM
+          gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true

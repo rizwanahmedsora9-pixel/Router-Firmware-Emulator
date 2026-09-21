@@ -1,0 +1,20 @@
+# Build output
+build/
+*/build/
+.gradle/
+local.properties
+*.apk
+*.ap_
+*.dex
+*.class
+captures/
+.externalNativeBuild/
+.cxx/
+.idea/
+*.iml
+.DS_Store
+
+# Local toolchain / scratch
+.cache/
+toolchain/
+out/

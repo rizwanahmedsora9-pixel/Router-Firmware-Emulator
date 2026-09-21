@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FlashGuard</string>
+    <string name="app_tagline">Firmware emulator &amp; brick shield</string>
+</resources>

@@ -157,7 +157,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LOG=$(tail -c 5000 ci-engine.log 2>/dev/null | sed 's/\r//g')
-          if [ -z "$LOG" ]; then LOG="(no engine log captured)"; fi
-          printf 'CI failure on %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$LOG" > /tmp/body.txt
+          python3 - "$GITHUB_SHA" <<'PYSQL'
+          import re, sys
+          sha = sys.argv[1]
+          try:
+              log = open('ci-engine.log', errors='replace').read()
+          except OSError:
+              log = ''
+          lines = log.splitlines()
+          keep = []
+          pat = re.compile(r'\[FAIL\]|Exception|Caused by|self-test:|Testing |real image|FAILED|error:')
+          for i, l in enumerate(lines):
+              if pat.search(l):
+                  keep.extend(lines[max(0, i - 1):i + 8])
+          keep = keep[:400]
+          body = ("CI failure on %s\n\n### self-test output\n```\n%s\n```\n\n### last lines\n```\n%s\n```\n"
+                  % (sha, "\n".join(keep), "\n".join(lines[-40:])))
+          open('/tmp/body.txt', 'w').write(body[:60000])
+          PYSQL
           gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true

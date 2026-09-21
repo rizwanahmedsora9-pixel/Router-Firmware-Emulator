@@ -126,6 +126,7 @@ class FirmwareUnpacker(
                 val entries = reader.toArchiveEntries()
                 val n = ArchiveImport.importInto(vfs, entries)
                 notes.add("SquashFS (${reader.superBlock.compressorName}): $n objects imported (${job.origin})")
+                notes.add(reader.diagnostics)
                 return n
             }
         }

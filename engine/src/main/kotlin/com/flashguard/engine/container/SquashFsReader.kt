@@ -105,6 +105,22 @@ class SquashFsReader(private val data: ByteArray) {
     val superBlock: Super get() = superblock ?: throw IllegalStateException("not a squashfs image")
     val warnings = ArrayList<String>()
 
+    // Diagnostics: when a real image only yields a handful of files we want to know exactly why.
+    private var scannedInodes = 0
+    private var metaBlocksVisited = 0
+    private var lastMetaRel = 0L
+    private var scanStop: String? = null
+    private var directoryEntriesSeen = 0
+    private var directoryEntriesResolved = 0
+
+    val diagnostics: String
+        get() = buildString {
+            append("squashfs scan: inodes=$scannedInodes metaBlocks=$metaBlocksVisited lastRel=$lastMetaRel ")
+            append("dirEntries=$directoryEntriesSeen/${directoryEntriesResolved} resolved")
+            scanStop?.let { append(" stop=$it") }
+            if (warnings.isNotEmpty()) append(" warnings=${warnings.take(3).joinToString("; ")}")
+        }
+
     private class MetaBlock(val relOffset: Long, val nextRelOffset: Long, val bytes: ByteArray)
 
     /** Sequential metadata stream (inode table / directory table): a chain of <=8K blocks. */
@@ -215,12 +231,25 @@ class SquashFsReader(private val data: ByteArray) {
         var guard = 0
         val tableEnd = hdr.directoryTableStart - hdr.inodeTableStart
         while (rel < tableEnd && inodeByRef.size < max && guard++ < 200_000) {
-            val block = stream.blockAt(rel) ?: break
+            val block = stream.blockAt(rel)
+            if (block == null) {
+                if (scanStop == null) scanStop = "metadata block unreadable at rel=$rel"
+                break
+            }
+            metaBlocksVisited++
+            lastMetaRel = rel
             var offset = 0
             while (offset < block.bytes.size && inodeByRef.size < max) {
-                val parsed = parseInodeAt(block.bytes, offset) ?: break
+                val parsed = parseInodeAt(block.bytes, offset)
+                if (parsed == null) {
+                    if (scanStop == null) {
+                        scanStop = "unparsable inode at block=$rel offset=$offset type=${if (offset + 2 <= block.bytes.size) Bin.u16le(block.bytes, offset) else -1}"
+                    }
+                    break
+                }
                 val key = blockKey(rel, offset)
                 inodeByRef[key] = parsed.inode
+                scannedInodes++
                 offset += parsed.consumed
             }
             rel = block.nextRelOffset
@@ -364,7 +393,10 @@ class SquashFsReader(private val data: ByteArray) {
                 if (p + 8 + nameLen > listing.size) break
                 val name = String(listing, p + 8, nameLen, Charsets.ISO_8859_1)
                 p += 8 + nameLen
-                val child = inodeByRef[blockKey(startBlock, entryOffset)] ?: continue
+                directoryEntriesSeen++
+                val child = inodeByRef[blockKey(startBlock, entryOffset)]
+                if (child == null) continue
+                directoryEntriesResolved++
                 if (name == "." || name == "..") continue
                 out.add(name to child)
             }

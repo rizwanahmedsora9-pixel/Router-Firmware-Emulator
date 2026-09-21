@@ -431,6 +431,8 @@ fun main(args: Array<String>) {
                         println("       DIAG unsupported=" + session.unpack.unsupported.take(4).joinToString(" | "))
                         println("       DIAG files=" + session.unpack.vfs.allFiles().take(24).joinToString(", ") { it.path })
                         println("       DIAG layers=" + session.identity.layers.flatMap { it.flattenTree() }.joinToString(", ") { "${it.format}:${it.length}" })
+                        println("       DIAG notes=" + session.unpack.notes.takeLast(6).joinToString(" | "))
+                        println("       DIAG dirs=" + session.unpack.vfs.allEntries().filter { it.isDir }.take(20).joinToString(", ") { it.path })
                     }
                     r.expect(initStage.ok, "init stage failed on an extractable real rootfs")
                 }

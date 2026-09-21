@@ -137,6 +137,19 @@ class SimShell(
         return result
     }
 
+    /** Text scripts start with a shebang or contain only printable text; binaries do not. */
+    private fun looksLikeScript(content: ByteArray): Boolean {
+        if (content.size >= 2 && content[0] == '#'.code.toByte() && content[1] == '!'.code.toByte()) return true
+        if (content.take(256).any { it == 0.toByte() }) return false // NUL bytes => compiled binary
+        val sample = content.take(512)
+        var printable = 0
+        for (byte in sample) {
+            val v = byte.toInt() and 0xFF
+            if (v == 9 || v == 10 || v == 13 || v in 0x20..0x7E) printable++
+        }
+        return printable >= sample.size * 0.9 && sample.isNotEmpty()
+    }
+
     /** Absolute or relative path -> a real path inside the virtual rootfs. */
     fun resolveInVfs(path: String): String {
         val candidate = Text.normPath(if (path.startsWith("/")) path else "/$path")
@@ -319,9 +332,21 @@ class SimShell(
         if (name.startsWith("/") || name.startsWith("./")) {
             val resolved = resolveInVfs(name)
             if (vfs.isFile(resolved)) {
-                val r = runScriptWithArgs(resolved, argv.drop(1), depth + 1)
-                ctx.exitCode = r.exitCode
-                if (r.output.isNotEmpty()) ctx.emit(r.output)
+                val content = vfs.read(resolved)
+                // A shell script runs as a script; a compiled binary (httpd, dropbear, ...) cannot
+                // execute on a phone, so it is dispatched to the command model by its name instead.
+                if (content != null && content.isNotEmpty() && looksLikeScript(content)) {
+                    val r = runScriptWithArgs(resolved, argv.drop(1), depth + 1)
+                    ctx.exitCode = r.exitCode
+                    if (r.output.isNotEmpty()) ctx.emit(r.output)
+                } else {
+                    val binaryName = Text.baseName(resolved)
+                    logLine("[exec] $binaryName ${argv.drop(1).joinToString(" ")} (native binary - modelled)".trim())
+                    val invoked = listOf(binaryName) + argv.drop(1)
+                    val (out2, code2) = Commands.run(binaryName, invoked, ctx.stdin, this, ctx)
+                    ctx.exitCode = code2
+                    if (out2.isNotEmpty()) ctx.emit(out2)
+                }
                 return ctx
             }
         }

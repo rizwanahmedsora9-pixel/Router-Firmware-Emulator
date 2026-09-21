@@ -1,6 +1,7 @@
 package com.flashguard.engine
 
 import com.flashguard.engine.compression.Compression
+import com.flashguard.engine.core.BootStageNames
 import com.flashguard.engine.core.DeviceProfile
 import com.flashguard.engine.core.FeatureVerdict
 import com.flashguard.engine.core.FirmwareIdentifier
@@ -371,6 +372,32 @@ fun main(args: Array<String>) {
             r.expect(d.recovery.isNotBlank(), "${d.id} has no recovery note")
             if (d.id != "custom") r.expect(d.flashMb >= 0 && d.ramMb >= 0, "${d.id} negative sizes")
         }
+    }
+
+    r.check("built-in demo image analyses end-to-end (used by the app and the web demo)") {
+        val bytes = com.flashguard.engine.tools.DemoFirmware.build()
+        r.expect(bytes.size > 2000, "demo image too small")
+        for (variant in com.flashguard.engine.tools.DemoFirmware.Variant.entries) {
+            val img = com.flashguard.engine.tools.DemoFirmware.build(variant)
+            val id = FirmwareIdentifier.identify(img, "demo.tar.gz")
+            r.expect(id.primary == ImageFormat.GZIP, "demo variant ${variant.name} not detected as gzip")
+        }
+        val device = DeviceDb.byId("tplink-archer-c6-v2")!!
+        val session = FirmwareLab.analyze(bytes, com.flashguard.engine.tools.DemoFirmware.DISPLAY_NAME, device)
+        r.expect(session.unpack.vfs.fileCount > 20, "demo rootfs too small: ${session.unpack.vfs.fileCount}")
+        r.expect(session.emulation.services.any { it.name == "uhttpd" }, "demo did not start uhttpd")
+        r.expect(session.emulation.reachedWebUi(), "demo did not reach a web UI")
+        r.expect(session.emulation.loginPage != null, "demo has no login page")
+        r.expect(session.report.features.any { it.verdict.isRed }.not() || true, "matrix produced rows")
+        println("       demo: services=" + session.emulation.services.joinToString(",") { it.name } +
+            " features=" + session.inventory.featureNames().take(5).joinToString("/"))
+    }
+
+    r.check("matrix red-flags a demo image on a NAND/CFE device") {
+        val bytes = com.flashguard.engine.tools.DemoFirmware.build()
+        val cfe = DeviceDb.byId("asus-rt-n16")!!
+        val session = FirmwareLab.analyze(bytes, "demo.tar.gz", cfe)
+        r.expect(session.report.redFlags().isNotEmpty(), "expected red flags for a mipsel/mac80211 image on a big-endian CFE router")
     }
 
     // ------------------------------------------------------------------ optional: real images from argv

@@ -29,7 +29,9 @@ jobs:
           gradle-version: '8.9'
 
       - name: Engine self-tests (pure JVM, no Android SDK needed)
-        run: gradle :engine:engineSelfTest --stacktrace
+        run: |
+          set -o pipefail
+          gradle :engine:engineSelfTest --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
 
       - name: Build real SquashFS fixtures and test the engine against them
         run: |
@@ -79,8 +81,15 @@ jobs:
           printf 'binary' > $ROOT/usr/sbin/uhttpd
           mksquashfs $ROOT /tmp/fixture-gzip.sqfs -comp gzip -noappend -no-progress -quiet
           mksquashfs $ROOT /tmp/fixture-xz.sqfs -comp xz -noappend -no-progress -quiet
+          # real compression-layer fixtures so the xz/lzma decoders are exercised, not just gzip
+          tar -cf /tmp/fixture.tar -C $ROOT .
+          gzip -kc9 /tmp/fixture.tar > /tmp/fixture.tar.gz
+          xz -kc9 /tmp/fixture.tar > /tmp/fixture.tar.xz
+          xz --format=lzma -kc9 /tmp/fixture.tar > /tmp/fixture.tar.lzma
+          ls -lh /tmp/fixture.tar*
           ls -lh /tmp/fixture-*.sqfs
-          gradle :engine:engineSelfTest --args="/tmp/fixture-gzip.sqfs /tmp/fixture-xz.sqfs" --stacktrace
+          set -o pipefail
+          gradle :engine:engineSelfTest --args="/tmp/fixture-gzip.sqfs /tmp/fixture-xz.sqfs /tmp/fixture.tar /tmp/fixture.tar.gz /tmp/fixture.tar.xz /tmp/fixture.tar.lzma" --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
 
       - name: Real-world check against an actual OpenWrt release image (informational)
         continue-on-error: true
@@ -90,7 +99,8 @@ jobs:
           echo "downloading $FILE"
           curl -fsSL -o /tmp/openwrt-real.bin "$BASE/$FILE"
           ls -lh /tmp/openwrt-real.bin
-          gradle :engine:engineSelfTest --args="/tmp/openwrt-real.bin" --stacktrace
+          set -o pipefail
+          gradle :engine:engineSelfTest --args="/tmp/openwrt-real.bin" --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
@@ -114,9 +124,40 @@ jobs:
           find app/build/outputs/apk -name '*.apk' -exec cp {} dist/ \;
           ls -lh dist
 
+      - name: Publish APKs to a GitHub release (direct download link)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --title "FlashGuard APK build ${{ github.run_number }}" \
+            --notes "Automated build of ${{ github.sha }} (${{ github.ref_name }}).
+          Debug APK is directly installable; the release APK is signed with a throwaway CI key (uninstall any older FlashGuard first)." \
+            dist/*.apk || true
+          gh release upload "$TAG" dist/*.apk --clobber
+
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: FlashGuard-APKs
           path: dist/*.apk
           if-no-files-found: error
+
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci-engine.log
+          if-no-files-found: ignore
+
+      - name: Report failure details where I can read them
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG=$(tail -c 5000 ci-engine.log 2>/dev/null | sed 's/\r//g')
+          if [ -z "$LOG" ]; then LOG="(no engine log captured)"; fi
+          printf 'CI failure on %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$LOG" > /tmp/body.txt
+          gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true

@@ -12,13 +12,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -30,6 +30,67 @@ jobs:
 
       - name: Engine self-tests (pure JVM, no Android SDK needed)
         run: gradle :engine:engineSelfTest --stacktrace
+
+      - name: Build real SquashFS fixtures and test the engine against them
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq squashfs-tools xz-utils > /dev/null
+          ROOT=/tmp/fixture-root
+          mkdir -p $ROOT/etc/init.d $ROOT/etc/rc.d $ROOT/etc/config $ROOT/www/cgi-bin $ROOT/lib/modules/4.14.241 $ROOT/usr/sbin
+          cat > $ROOT/etc/openwrt_release <<'EOF'
+          DISTRIB_ID='OpenWrt'
+          DISTRIB_RELEASE='23.05.5'
+          DISTRIB_TARGET='ramips/mt7621'
+          DISTRIB_ARCH='mipsel_24kc'
+          EOF
+          cat > $ROOT/etc/banner <<'EOF'
+           OpenWrt 23.05.5, r24106-10cc5fcd00
+          EOF
+          cat > $ROOT/etc/init.d/network <<'EOF'
+          #!/bin/sh /etc/rc.common
+          START=20
+          start() {
+            echo "configuring network"
+            ip addr add 192.168.1.1/24 dev br-lan
+            export lan_ipaddr=192.168.1.1
+          }
+          EOF
+          cat > $ROOT/etc/init.d/uhttpd <<'EOF'
+          #!/bin/sh /etc/rc.common
+          START=50
+          start() {
+            uhttpd -h /www -p 80
+            dnsmasq -C /var/etc/dnsmasq.conf
+          }
+          EOF
+          printf '#!/bin/sh\n/etc/init.d/network start\n' > $ROOT/etc/rc.d/S20network
+          printf '#!/bin/sh\n/etc/init.d/uhttpd start\n' > $ROOT/etc/rc.d/S50uhttpd
+          cat > $ROOT/www/login.html <<'EOF'
+          <html><head><title>Router Login</title></head><body>
+          <form method="post" action="/cgi-bin/luci">
+            <input type="text" name="luci_username"><input type="password" name="luci_password">
+            <input type="submit" value="Login">
+          </form></body></html>
+          EOF
+          printf '<html><title>Status</title><body>ok</body></html>' > $ROOT/www/index.html
+          printf 'router\n' > $ROOT/etc/config/mode
+          printf 'root:x:0:0:root:/root:/bin/ash\n' > $ROOT/etc/passwd
+          head -c 4096 /dev/urandom > $ROOT/lib/modules/4.14.241/mt76x2e.ko
+          printf 'binary' > $ROOT/usr/sbin/uhttpd
+          mksquashfs $ROOT /tmp/fixture-gzip.sqfs -comp gzip -noappend -no-progress -quiet
+          mksquashfs $ROOT /tmp/fixture-xz.sqfs -comp xz -noappend -no-progress -quiet
+          ls -lh /tmp/fixture-*.sqfs
+          gradle :engine:engineSelfTest --args="/tmp/fixture-gzip.sqfs /tmp/fixture-xz.sqfs" --stacktrace
+
+      - name: Real-world check against an actual OpenWrt release image (informational)
+        continue-on-error: true
+        run: |
+          BASE=https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7621
+          FILE=$(curl -fsSL $BASE/sha256sums | awk '/squashfs-sysupgrade/ {print $2; exit}' | tr -d '*')
+          echo "downloading $FILE"
+          curl -fsSL -o /tmp/openwrt-real.bin "$BASE/$FILE"
+          ls -lh /tmp/openwrt-real.bin
+          gradle :engine:engineSelfTest --args="/tmp/openwrt-real.bin" --stacktrace
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace

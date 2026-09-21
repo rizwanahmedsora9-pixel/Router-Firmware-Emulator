@@ -23,6 +23,7 @@ import com.flashguard.engine.core.ProbeResult
 import com.flashguard.engine.device.DeviceDb
 import com.flashguard.engine.tools.DemoFirmware
 import com.flashguard.engine.util.Hex
+import com.flashguard.engine.util.ProgressSink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -213,13 +214,16 @@ class MainActivity : AppCompatActivity() {
             LabHolder.session?.stopWebUi()
             LabHolder.session = null
             try {
-                val session = withContext(Dispatchers.Default) {
-                    FirmwareLab.analyze(bytes, LabHolder.fileName, device) { pct, message ->
+                val progress = object : ProgressSink {
+                    override fun onProgress(percent: Int, message: String) {
                         runOnUiThread {
-                            b.scanProgress.progress = pct
+                            b.scanProgress.progress = percent
                             b.textProgress.text = message
                         }
                     }
+                }
+                val session = withContext(Dispatchers.Default) {
+                    FirmwareLab.analyze(bytes, LabHolder.fileName, device, progress = progress)
                 }
                 LabHolder.session = session
                 setBusy(false)

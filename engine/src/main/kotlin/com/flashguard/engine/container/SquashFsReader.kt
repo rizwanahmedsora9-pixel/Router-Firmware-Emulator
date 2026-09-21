@@ -240,109 +240,92 @@ class SquashFsReader(private val data: ByteArray) {
         val mtime = Bin.u32le(b, off + 8)
         val number = Bin.u32le(b, off + 12)
         fun u32(o: Int) = Bin.u32le(b, off + o)
+        // Every access below is guarded: metadata blocks are padded, so the last inode in a
+        // block may be a partial one (this crashed on a real OpenWrt image).
+        fun fits(bytes: Int) = off + bytes <= b.size
+        fun basicDir(): Parsed? {
+            if (!fits(32)) return null
+            return Parsed(
+                Inode(
+                    number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
+                    dirStartBlock = u32(16), dirOffset = Bin.u16le(b, off + 26),
+                    dirSize = Bin.u16le(b, off + 24).toLong(),
+                ),
+                32,
+            )
+        }
+        fun basicFile(): Parsed? {
+            if (!fits(32)) return null
+            val blockCount = dataBlockCount(u32(28), u32(20))
+            if (!fits(32 + blockCount * 4)) return null
+            return Parsed(
+                Inode(
+                    number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
+                    startBlock = u32(16), fragment = u32(20), fragmentOffset = u32(24).toInt(),
+                    fileSize = u32(28), blockSizes = (0 until blockCount).map { u32(32 + it * 4) },
+                ),
+                32 + blockCount * 4,
+            )
+        }
+        fun symlink(): Parsed? {
+            if (!fits(24)) return null
+            val targetSize = u32(20).toInt()
+            if (targetSize < 0 || !fits(24 + targetSize)) return null
+            return Parsed(
+                Inode(
+                    number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
+                    symlinkTarget = String(b, off + 24, targetSize, Charsets.ISO_8859_1),
+                    fileSize = targetSize.toLong(),
+                ),
+                24 + targetSize,
+            )
+        }
         return when (type) {
-            1 -> { // basic directory
-                val startBlock = u32(16)
-                val nlink = u32(20)
-                val fileSize = Bin.u16le(b, off + 24).toLong()
-                val dirOffset = Bin.u16le(b, off + 26)
-                Parsed(
-                    Inode(
-                        number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
-                        dirStartBlock = startBlock, dirOffset = dirOffset, dirSize = fileSize,
-                    ),
-                    32,
-                )
-            }
-            2 -> { // basic file
-                val startBlock = u32(16)
-                val fragment = u32(20)
-                val fragmentOffset = u32(24).toInt()
-                val fileSize = u32(28)
-                val blockCount = dataBlockCount(fileSize, fragment)
-                val consumed = 32 + blockCount * 4
-                val sizes = (0 until blockCount).map { u32(32 + it * 4) }
-                Parsed(
-                    Inode(
-                        number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
-                        startBlock = startBlock, fragment = fragment, fragmentOffset = fragmentOffset,
-                        fileSize = fileSize, blockSizes = sizes,
-                    ),
-                    consumed,
-                )
-            }
-            3 -> { // basic symlink
-                val nlink = u32(16)
-                val targetSize = u32(20).toInt()
-                if (off + 24 + targetSize > b.size) return null
-                val target = String(b, off + 24, targetSize, Charsets.ISO_8859_1)
-                Parsed(
-                    Inode(
-                        number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
-                        symlinkTarget = target, fileSize = targetSize.toLong(),
-                    ),
-                    24 + targetSize,
-                )
-            }
-            4, 5 -> Parsed(
+            1 -> basicDir()
+            2 -> basicFile()
+            3 -> symlink()
+            4, 5 -> if (!fits(24)) null else Parsed(
                 Inode(number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime, fileSize = 0),
                 24,
             )
-            6, 7 -> Parsed(
+            6, 7 -> if (!fits(20)) null else Parsed(
                 Inode(number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime, fileSize = 0),
                 20,
             )
             8 -> { // extended directory
-                val nlink = u32(16)
-                val fileSize = u32(20)
-                val startBlock = u32(24)
-                val parentInode = u32(28)
+                if (!fits(40)) return null
                 val indexCount = Bin.u16le(b, off + 32)
-                val dirOffset = Bin.u16le(b, off + 34)
+                if (!fits(40 + indexCount * 16)) return null
                 Parsed(
                     Inode(
                         number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
-                        dirStartBlock = startBlock, dirOffset = dirOffset, dirSize = fileSize,
+                        dirStartBlock = u32(24), dirOffset = Bin.u16le(b, off + 34), dirSize = u32(20),
                     ),
                     40 + indexCount * 16,
                 )
             }
             9 -> { // extended file
-                val startBlock = Bin.u64le(b, off + 16)
+                if (!fits(56)) return null
                 val fileSize = Bin.u64le(b, off + 24)
-                val nlink = u32(40)
                 val fragment = u32(44)
-                val fragmentOffset = u32(48).toInt()
                 val blockCount = dataBlockCount(fileSize, fragment)
-                val consumed = 56 + blockCount * 4
-                val sizes = (0 until blockCount).map { u32(56 + it * 4) }
+                if (!fits(56 + blockCount * 4)) return null
                 Parsed(
                     Inode(
                         number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
-                        startBlock = startBlock, fragment = fragment, fragmentOffset = fragmentOffset,
-                        fileSize = fileSize, blockSizes = sizes,
+                        startBlock = Bin.u64le(b, off + 16), fragment = fragment,
+                        fragmentOffset = u32(48).toInt(), fileSize = fileSize,
+                        blockSizes = (0 until blockCount).map { u32(56 + it * 4) },
                     ),
-                    consumed,
+                    56 + blockCount * 4,
                 )
             }
-            10 -> { // extended symlink
-                val nlink = u32(16)
-                val targetSize = u32(20).toInt()
-                if (off + 24 + targetSize > b.size) return null
-                val target = String(b, off + 24, targetSize, Charsets.ISO_8859_1)
-                Parsed(
-                    Inode(
-                        number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime,
-                        symlinkTarget = target, fileSize = targetSize.toLong(),
-                    ),
-                    24 + targetSize,
-                )
-            }
-            11, 12 -> Parsed(
+            10 -> symlink() // extended symlink has the same on-disk layout as the basic one
+            11, 12 -> if (!fits(28)) null else Parsed(
                 Inode(number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime, fileSize = 0),
                 28,
             )
-            13, 14 -> Parsed(
+            13, 14 -> if (!fits(24)) null else Parsed(
                 Inode(number = number, type = type, mode = mode, uid = uid, gid = gid, mtime = mtime, fileSize = 0),
                 24,
             )

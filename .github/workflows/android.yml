@@ -109,7 +109,9 @@ jobs:
           gradle :engine:engineSelfTest --args="/tmp/openwrt-real.bin" --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
 
       - name: Generate throwaway signing key + build signed release APK
         run: |
@@ -117,7 +119,8 @@ jobs:
             -alias flashguard -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass flashguard -keypass flashguard \
             -dname "CN=FlashGuard, OU=Arena Agent Build, O=FlashGuard, L=NA, ST=NA, C=NA"
-          gradle :app:assembleRelease --stacktrace
+          set -o pipefail
+          gradle :app:assembleRelease --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
         env:
           FLASHGUARD_KEYSTORE: ${{ runner.temp }}/flashguard.jks
           FLASHGUARD_KEYSTORE_PASS: flashguard
@@ -170,15 +173,18 @@ jobs:
               log = open('ci-engine.log', errors='replace').read()
           except OSError:
               log = ''
-          lines = log.splitlines()
-          keep = []
-          pat = re.compile(r'\[FAIL\]|Exception|Caused by|self-test:|Testing |real image|FAILED|error:')
-          for i, l in enumerate(lines):
-              if pat.search(l):
-                  keep.extend(lines[max(0, i - 1):i + 8])
-          keep = keep[:400]
-          body = ("CI failure on %s\n\n### self-test output\n```\n%s\n```\n\n### last lines\n```\n%s\n```\n"
-                  % (sha, "\n".join(keep), "\n".join(lines[-40:])))
+          lines = [l for l in log.splitlines() if not l.lstrip().startswith('at ')]
+          def grab(pattern, ctx, cap):
+              pat = re.compile(pattern)
+              out = []
+              for i, l in enumerate(lines):
+                  if pat.search(l):
+                      out.extend(lines[max(0, i - ctx):i + ctx])
+              return out[:cap]
+          build = grab(r'^e: |error:|AAPT|aapt2|Unresolved|overload resolution|type mismatch|Execution failed for task|FAILURE:|^> Task ':app|Caused by|What went wrong', 4, 300)
+          tests = grab(r'\[FAIL\]|self-test:|^> Task :engine', 2, 120)
+          body = ("CI failure on %s\n\n### build errors\n```\n%s\n```\n\n### self-test tasks\n```\n%s\n```\n\n### tail\n```\n%s\n```\n"
+                  % (sha, "\n".join(build), "\n".join(tests), "\n".join(lines[-40:])))
           open('/tmp/body.txt', 'w').write(body[:60000])
           PYSQL
           gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true

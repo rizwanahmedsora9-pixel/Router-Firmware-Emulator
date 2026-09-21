@@ -418,28 +418,38 @@ class SquashFsReader(private val data: ByteArray) {
 
     private val fragmentCache = HashMap<Long, ByteArray>()
 
+    private val fragmentMetaCache = HashMap<Int, ByteArray>()
+
+    /** The fragment table is a list of metadata-block locations; each block holds 16-byte entries. */
+    private fun fragmentTableMeta(indexBlockNo: Int): ByteArray? {
+        fragmentMetaCache[indexBlockNo]?.let { return it }
+        val pos = hdr.fragmentTableStart + indexBlockNo * 8L
+        if (pos < 0 || pos + 8 > data.size) return null
+        val metaStart = Bin.u64le(data, pos.toInt())
+        if (metaStart <= 0 || metaStart + 2 > data.size) return null
+        val block = MetaStream(metaStart).blockAt(0) ?: return null
+        fragmentMetaCache[indexBlockNo] = block.bytes
+        return block.bytes
+    }
+
     private fun readFragment(index: Long): ByteArray? {
         fragmentCache[index]?.let { return it }
-        if (hdr.fragments == 0L || hdr.fragmentTableStart == 0L || index >= hdr.fragments) return null
-        val perBlock = hdr.blockSize / 16
-        val indexBlockNo = (index / perBlock).toInt()
-        val indexEntryPos = hdr.fragmentTableStart + indexBlockNo * 8L
-        if (indexEntryPos + 8 > data.size) return null
-        val blockStart = Bin.u64le(data, indexEntryPos.toInt())
-        if (blockStart + 4 > data.size) return null
-        val count = Bin.u32le(data, blockStart.toInt())
-        val within = (index - indexBlockNo * perBlock).toInt()
-        if (within >= count) return null
-        val entryPos = blockStart + 4 + within * 16L
-        if (entryPos + 16 > data.size) return null
-        var start = Bin.u64le(data, entryPos.toInt())
-        val sizeField = Bin.u32le(data, entryPos.toInt() + 8)
-        if (start > data.size) start += hdr.fragmentTableStart // very old images store it relative
+        if (hdr.fragments == 0L || hdr.fragmentTableStart == 0L || index < 0 || index >= hdr.fragments) return null
+        val perMeta = maxOf(1, hdr.blockSize / 16)
+        val indexBlockNo = (index / perMeta).toInt()
+        val meta = fragmentTableMeta(indexBlockNo) ?: return null
+        val within = (index - indexBlockNo.toLong() * perMeta).toInt()
+        val entryPos = within * 16
+        if (entryPos + 16 > meta.size) return null
+        val start = Bin.u64le(meta, entryPos)
+        val sizeField = Bin.u32le(meta, entryPos + 8)
+        if (start < 0 || start > data.size) return null
         val uncompressed = (sizeField and 0x01000000L) != 0L
         val size = (sizeField and 0x00FFFFFF).toInt()
-        if (size <= 0 || start + size > data.size) return null
+        if (size < 0 || start + size > data.size) return null
+        if (size == 0) return ByteArray(0)
         val payload = data.copyOfRange(start.toInt(), (start + size).toInt())
-        val block = if (uncompressed) payload else decompress(payload, hdr.blockSize) ?: return null
+        val block = if (uncompressed) payload else (decompress(payload, hdr.blockSize) ?: return null)
         fragmentCache[index] = block
         return block
     }
@@ -476,10 +486,16 @@ class SquashFsReader(private val data: ByteArray) {
             val frag = readFragment(inode.fragment)
             if (frag != null) {
                 val start = inode.fragmentOffset
-                val len = minOf(remaining, (frag.size - start).toLong()).toInt()
-                if (start in 0 until frag.size && len > 0) out.write(frag, start, len)
+                if (start in 0 until frag.size) {
+                    val len = minOf(remaining, (frag.size - start).toLong()).toInt()
+                    if (len > 0) out.write(frag, start, len)
+                }
             }
         }
+        // A non-empty file that produced no bytes means the payload could not be read
+        // (unsupported block codec, truncated image). Report it as unreadable instead of
+        // silently handing back an empty file.
+        if (out.size() == 0 && inode.fileSize > 0) return null
         return out.toByteArray()
     }
 

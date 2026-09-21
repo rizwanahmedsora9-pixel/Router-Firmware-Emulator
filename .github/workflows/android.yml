@@ -78,6 +78,12 @@ jobs:
           printf 'router\n' > $ROOT/etc/config/mode
           printf 'root:x:0:0:root:/root:/bin/ash\n' > $ROOT/etc/passwd
           head -c 4096 /dev/urandom > $ROOT/lib/modules/4.14.241/mt76x2e.ko
+          # >block-size files exercise the indexed-block path, not just fragments
+          mkdir -p $ROOT/usr/lib/opkg $ROOT/www/luci-static/resources
+          head -c 300000 /dev/urandom > $ROOT/lib/modules/4.14.241/big-random.ko
+          yes 'conf option value' | head -c 400000 > $ROOT/etc/config/network-large
+          printf 'a' > $ROOT/usr/lib/opkg/status
+          printf 'b' > $ROOT/www/luci-static/resources/x.js
           printf 'binary' > $ROOT/usr/sbin/uhttpd
           mksquashfs $ROOT /tmp/fixture-gzip.sqfs -comp gzip -noappend -no-progress -quiet
           mksquashfs $ROOT /tmp/fixture-xz.sqfs -comp xz -noappend -no-progress -quiet

@@ -1,0 +1,233 @@
+name: Android build & engine tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Engine self-tests (pure JVM, no Android SDK needed)
+        run: |
+          set -o pipefail
+          gradle :engine:engineSelfTest --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
+
+      - name: Build real SquashFS fixtures and test the engine against them
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq squashfs-tools xz-utils > /dev/null
+          ROOT=/tmp/fixture-root
+          mkdir -p $ROOT/etc/init.d $ROOT/etc/rc.d $ROOT/etc/config $ROOT/www/cgi-bin $ROOT/lib/modules/4.14.241 $ROOT/usr/sbin
+          cat > $ROOT/etc/openwrt_release <<'EOF'
+          DISTRIB_ID='OpenWrt'
+          DISTRIB_RELEASE='23.05.5'
+          DISTRIB_TARGET='ramips/mt7621'
+          DISTRIB_ARCH='mipsel_24kc'
+          EOF
+          cat > $ROOT/etc/banner <<'EOF'
+           OpenWrt 23.05.5, r24106-10cc5fcd00
+          EOF
+          cat > $ROOT/etc/init.d/network <<'EOF'
+          #!/bin/sh /etc/rc.common
+          START=20
+          start() {
+            echo "configuring network"
+            ip addr add 192.168.1.1/24 dev br-lan
+            export lan_ipaddr=192.168.1.1
+          }
+          EOF
+          cat > $ROOT/etc/init.d/uhttpd <<'EOF'
+          #!/bin/sh /etc/rc.common
+          START=50
+          start() {
+            uhttpd -h /www -p 80
+            dnsmasq -C /var/etc/dnsmasq.conf
+          }
+          EOF
+          printf '#!/bin/sh\n/etc/init.d/network start\n' > $ROOT/etc/rc.d/S20network
+          printf '#!/bin/sh\n/etc/init.d/uhttpd start\n' > $ROOT/etc/rc.d/S50uhttpd
+          cat > $ROOT/www/login.html <<'EOF'
+          <html><head><title>Router Login</title></head><body>
+          <form method="post" action="/cgi-bin/luci">
+            <input type="text" name="luci_username"><input type="password" name="luci_password">
+            <input type="submit" value="Login">
+          </form></body></html>
+          EOF
+          printf '<html><title>Status</title><body>ok</body></html>' > $ROOT/www/index.html
+          printf 'router\n' > $ROOT/etc/config/mode
+          printf 'root:x:0:0:root:/root:/bin/ash\n' > $ROOT/etc/passwd
+          head -c 4096 /dev/urandom > $ROOT/lib/modules/4.14.241/mt76x2e.ko
+          # >block-size files exercise the indexed-block path, not just fragments
+          mkdir -p $ROOT/usr/lib/opkg $ROOT/www/luci-static/resources
+          head -c 300000 /dev/urandom > $ROOT/lib/modules/4.14.241/big-random.ko
+          yes 'conf option value' | head -c 400000 > $ROOT/etc/config/network-large
+          printf 'a' > $ROOT/usr/lib/opkg/status
+          printf 'b' > $ROOT/www/luci-static/resources/x.js
+          printf 'binary' > $ROOT/usr/sbin/uhttpd
+          mksquashfs $ROOT /tmp/fixture-gzip.sqfs -comp gzip -noappend -no-progress -quiet
+          mksquashfs $ROOT /tmp/fixture-xz.sqfs -comp xz -noappend -no-progress -quiet
+          # real compression-layer fixtures so the xz/lzma decoders are exercised, not just gzip
+          tar -cf /tmp/fixture.tar -C $ROOT .
+          gzip -kc9 /tmp/fixture.tar > /tmp/fixture.tar.gz
+          xz -kc9 /tmp/fixture.tar > /tmp/fixture.tar.xz
+          xz --format=lzma -kc9 /tmp/fixture.tar > /tmp/fixture.tar.lzma
+          ls -lh /tmp/fixture.tar*
+          ls -lh /tmp/fixture-*.sqfs
+          set -o pipefail
+          gradle :engine:engineSelfTest --args="/tmp/fixture-gzip.sqfs /tmp/fixture-xz.sqfs /tmp/fixture.tar /tmp/fixture.tar.gz /tmp/fixture.tar.xz /tmp/fixture.tar.lzma" --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
+
+      - name: Real-world check against an actual OpenWrt release image (informational)
+        continue-on-error: true
+        run: |
+          BASE=https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7621
+          FILE=$(curl -fsSL $BASE/sha256sums | awk '/squashfs-sysupgrade/ {print $2; exit}' | tr -d '*')
+          echo "downloading $FILE"
+          curl -fsSL -o /tmp/openwrt-real.bin "$BASE/$FILE"
+          ls -lh /tmp/openwrt-real.bin
+          set -o pipefail
+          gradle :engine:engineSelfTest --args="/tmp/openwrt-real.bin" --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
+
+      - name: Summarize what the engine made of the real images
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 - <<'PYSUM'
+          import re
+          try:
+              lines = open('ci-engine.log', errors='replace').read().splitlines()
+          except OSError:
+              lines = []
+          blocks = []
+          for i, l in enumerate(lines):
+              if 'real image' in l or 'self-test:' in l or '[FAIL]' in l or 'DIAG' in l:
+                  blocks.append("\n".join(lines[max(0, i - 9):i + 6]))
+          real = [b for b in blocks if 'openwrt-real' in b]
+          other = [b for b in blocks if 'openwrt-real' not in b]
+          keep = real[:8] + other[:70]
+          open('/tmp/summary.txt', 'w').write("\n".join(keep)[:12000])
+          print("\n".join(keep))
+          PYSUM
+
+      - name: Build debug APK
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
+
+      - name: Generate throwaway signing key + build signed release APK
+        run: |
+          keytool -genkeypair -v -keystore "$RUNNER_TEMP/flashguard.jks" \
+            -alias flashguard -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass flashguard -keypass flashguard \
+            -dname "CN=FlashGuard, OU=Arena Agent Build, O=FlashGuard, L=NA, ST=NA, C=NA"
+          set -o pipefail
+          gradle :app:assembleRelease --stacktrace --console=plain 2>&1 | tee -a ci-engine.log
+        env:
+          FLASHGUARD_KEYSTORE: ${{ runner.temp }}/flashguard.jks
+          FLASHGUARD_KEYSTORE_PASS: flashguard
+          FLASHGUARD_KEY_ALIAS: flashguard
+          FLASHGUARD_KEY_PASS: flashguard
+
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          find app/build/outputs/apk -name '*.apk' -exec cp {} dist/ \;
+          ls -lh dist
+
+      - name: Publish APKs to a GitHub release (direct download link)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --title "FlashGuard APK build ${{ github.run_number }}" \
+            --notes "Automated build of ${{ github.sha }} (${{ github.ref_name }}).
+
+          What the engine said about the test images:
+          $(cat /tmp/summary.txt 2>/dev/null || echo 'n/a')
+          Debug APK is directly installable; the release APK is signed with a throwaway CI key (uninstall any older FlashGuard first)." \
+            dist/*.apk || true
+          gh release upload "$TAG" dist/*.apk --clobber
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashGuard-APKs
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci-engine.log
+          if-no-files-found: ignore
+
+      - name: Report failure details where I can read them
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - "$GITHUB_SHA" <<'PYSQL'
+          import re, sys
+          sha = sys.argv[1]
+          try:
+              log = open('ci-engine.log', errors='replace').read()
+          except OSError:
+              log = ''
+          lines = [l for l in log.splitlines() if not l.lstrip().startswith('at ')]
+          def grab(pattern, ctx, cap):
+              pat = re.compile(pattern)
+              out = []
+              for i, l in enumerate(lines):
+                  if pat.search(l):
+                      out.extend(lines[max(0, i - ctx):i + ctx])
+              return out[:cap]
+          build = grab(r"^e: |error:|AAPT|aapt2|Unresolved|overload resolution|type mismatch|Execution failed for task|FAILURE:|> Task :app|Caused by|What went wrong", 4, 300)
+          tests = grab(r"\[FAIL\]|self-test:|> Task :engine", 2, 120)
+          body = ("CI failure on %s\n\n### build errors\n```\n%s\n```\n\n### self-test tasks\n```\n%s\n```\n\n### tail\n```\n%s\n```\n"
+                  % (sha, "\n".join(build), "\n".join(tests), "\n".join(lines[-40:])))
+          open('/tmp/body.txt', 'w').write(body[:60000])
+          PYSQL
+          gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true
+        continue-on-error: true
+
+      - name: Post engine summary on the commit
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - "$GITHUB_SHA" <<'PYSUM'
+          import sys
+          sha = sys.argv[1]
+          try:
+              summary = open('/tmp/summary.txt', errors='replace').read()
+          except OSError:
+              summary = 'no summary produced'
+          body = "Engine summary for %s\n\n```\n%s\n```\n" % (sha, summary[:12000])
+          open('/tmp/body.txt', 'w').write(body[:60000])
+          PYSUM
+          gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true

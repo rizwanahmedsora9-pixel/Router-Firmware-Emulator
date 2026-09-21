@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+    <color name="brand_primary">#FF1493B8</color>
+    <color name="brand_primary_container">#FF0B3A4A</color>
+    <color name="brand_secondary">#FF7BD4F0</color>
+    <color name="bg_dark">#FF0B1016</color>
+    <color name="surface_dark">#FF141B24</color>
+    <color name="panel_dark">#FF1B2430</color>
+    <color name="text_primary">#FFE8EEF5</color>
+    <color name="text_secondary">#FF9DB0C3</color>
+    <color name="ok_green">#FF2EB872</color>
+    <color name="warn_amber">#FFF2B33D</color>
+    <color name="bad_red">#FFE5484D</color>
+    <color name="info_blue">#FF4C9AFF</color>
+    <color name="chip_bg">#FF22303F</color>
+</resources>

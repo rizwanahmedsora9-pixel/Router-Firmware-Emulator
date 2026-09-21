@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="sim_image_kinds">
+        <item>Factory firmware image (whole flash dump)</item>
+        <item>Kernel / rootfs partition only</item>
+        <item>SquashFS / ext4 filesystem partition</item>
+        <item>U-Boot / bootloader partition</item>
+        <item>Unknown - let FlashGuard sniff it</item>
+    </string-array>
+</resources>

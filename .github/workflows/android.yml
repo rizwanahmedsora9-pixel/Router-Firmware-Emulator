@@ -181,10 +181,11 @@ jobs:
                   if pat.search(l):
                       out.extend(lines[max(0, i - ctx):i + ctx])
               return out[:cap]
-          build = grab(r'^e: |error:|AAPT|aapt2|Unresolved|overload resolution|type mismatch|Execution failed for task|FAILURE:|^> Task ':app|Caused by|What went wrong', 4, 300)
-          tests = grab(r'\[FAIL\]|self-test:|^> Task :engine', 2, 120)
+          build = grab(r"^e: |error:|AAPT|aapt2|Unresolved|overload resolution|type mismatch|Execution failed for task|FAILURE:|> Task :app|Caused by|What went wrong", 4, 300)
+          tests = grab(r"\[FAIL\]|self-test:|> Task :engine", 2, 120)
           body = ("CI failure on %s\n\n### build errors\n```\n%s\n```\n\n### self-test tasks\n```\n%s\n```\n\n### tail\n```\n%s\n```\n"
                   % (sha, "\n".join(build), "\n".join(tests), "\n".join(lines[-40:])))
           open('/tmp/body.txt', 'w').write(body[:60000])
           PYSQL
           gh api --method POST "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -F body=@/tmp/body.txt || true
+        continue-on-error: true

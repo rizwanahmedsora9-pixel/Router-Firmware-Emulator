@@ -424,6 +424,14 @@ fun main(args: Array<String>) {
                 r.expect(rootfsStage.ok, "rootfs extraction reported failure for a real image")
                 r.expect(session.facts.rootfsUncompressed > 0, "no rootfs bytes measured")
                 if (session.unpack.vfs.isDir("/etc") || session.unpack.vfs.isDir("/www")) {
+                    if (!initStage.ok) {
+                        println("       DIAG initStage detail=${initStage.detail}")
+                        println("       DIAG /etc/init.d dir=${session.unpack.vfs.isDir("/etc/init.d")} " +
+                            "/etc dir=${session.unpack.vfs.isDir("/etc")} /www dir=${session.unpack.vfs.isDir("/www")}")
+                        println("       DIAG unsupported=" + session.unpack.unsupported.take(4).joinToString(" | "))
+                        println("       DIAG files=" + session.unpack.vfs.allFiles().take(24).joinToString(", ") { it.path })
+                        println("       DIAG layers=" + session.identity.layers.flatMap { it.flattenTree() }.joinToString(", ") { "${it.format}:${it.length}" })
+                    }
                     r.expect(initStage.ok, "init stage failed on an extractable real rootfs")
                 }
                 println("       webRoot=${session.emulation.webRoot} loginPage=${session.emulation.loginPage} webStage=${webStage.ok}")

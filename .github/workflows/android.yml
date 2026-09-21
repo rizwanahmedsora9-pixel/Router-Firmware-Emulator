@@ -120,8 +120,8 @@ jobs:
               lines = []
           blocks = []
           for i, l in enumerate(lines):
-              if 'real image' in l or 'self-test:' in l or '[FAIL]' in l:
-                  blocks.append("\n".join(lines[i:i + 6]))
+              if 'real image' in l or 'self-test:' in l or '[FAIL]' in l or 'DIAG' in l:
+                  blocks.append("\n".join(lines[max(0, i - 9):i + 6]))
           real = [b for b in blocks if 'openwrt-real' in b]
           other = [b for b in blocks if 'openwrt-real' not in b]
           keep = real[:8] + other[:70]

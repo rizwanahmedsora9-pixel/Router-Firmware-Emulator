@@ -118,11 +118,13 @@ jobs:
               lines = open('ci-engine.log', errors='replace').read().splitlines()
           except OSError:
               lines = []
-          keep = []
+          blocks = []
           for i, l in enumerate(lines):
               if 'real image' in l or 'self-test:' in l or '[FAIL]' in l:
-                  keep.extend(lines[i:i + 6])
-          keep = keep[:80]
+                  blocks.append("\n".join(lines[i:i + 6]))
+          real = [b for b in blocks if 'openwrt-real' in b]
+          other = [b for b in blocks if 'openwrt-real' not in b]
+          keep = real[:8] + other[:70]
           open('/tmp/summary.txt', 'w').write("\n".join(keep)[:12000])
           print("\n".join(keep))
           PYSUM

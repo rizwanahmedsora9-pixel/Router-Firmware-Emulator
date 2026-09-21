@@ -78,13 +78,23 @@ enum class Vendor(val display: String, val slugs: List<String>) {
             var best: Pair<Vendor, String>? = null
             for (v in entries) {
                 for (slug in v.slugs) {
-                    if (low.contains(slug)) {
-                        val candidate = v to slug
-                        if (best == null || slug.length > (best.second.length)) best = candidate
-                    }
+                    val idx = low.indexOf(slug)
+                    if (idx < 0) continue
+                    // Short slugs must stand on their own: "zte" inside random flash bytes (or
+                    // inside a longer word) is not evidence of a ZTE image.
+                    if (slug.length < 6 && !isStandalone(low, idx, slug.length)) continue
+                    val candidate = v to slug
+                    if (best == null || slug.length > (best.second.length)) best = candidate
                 }
             }
             return best
+        }
+
+        private fun isStandalone(text: String, index: Int, length: Int): Boolean {
+            fun boundary(c: Char) = !c.isLetterOrDigit()
+            val beforeOk = index == 0 || boundary(text[index - 1])
+            val afterOk = index + length >= text.length || boundary(text[index + length])
+            return beforeOk && afterOk
         }
     }
 }

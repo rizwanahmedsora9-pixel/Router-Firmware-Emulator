@@ -21,6 +21,7 @@
     </queries>
 
     <application
+        android:name=".FlashGuardApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -66,6 +67,12 @@
             android:name=".ReportActivity"
             android:exported="false"
             android:label="FlashGuard report"
+            android:theme="@style/Theme.FlashGuard" />
+
+        <activity
+            android:name=".DiagnosticsActivity"
+            android:exported="false"
+            android:label="Full diagnostics"
             android:theme="@style/Theme.FlashGuard" />
     </application>
 </manifest>

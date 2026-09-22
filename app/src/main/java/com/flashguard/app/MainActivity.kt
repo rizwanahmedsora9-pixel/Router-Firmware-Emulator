@@ -67,6 +67,8 @@ class MainActivity : AppCompatActivity() {
         b.btnStopEmulator.setOnClickListener { stopEmulatorServer() }
         b.btnRunProbe.setOnClickListener { runProbe() }
         b.btnShareReport.setOnClickListener { openReport() }
+        b.btnCopyReport.setOnClickListener { copyReport() }
+        b.btnOpenDiagnostics.setOnClickListener { startActivity(Intent(this, DiagnosticsActivity::class.java)) }
         b.reportFormat.setOnCheckedChangeListener { _, _ -> renderReport() }
         b.bottomNav.setOnItemSelectedListener { item -> showSection(item.itemId); true }
         b.bottomNav.selectedItemId = R.id.tab_analyze
@@ -160,10 +162,17 @@ class MainActivity : AppCompatActivity() {
             when {
                 name.startsWith("TOO_BIG:") -> {
                     val parts = name.split(":")
+                    AppLog.w("firmware", "File too large: ${parts.getOrNull(1)} (${parts.getOrNull(2)} bytes)")
                     toast("That file is ${parts.getOrNull(2)?.toLongOrNull()?.let { Hex.humanBytes(it) }} - larger than the ${Hex.humanBytes(MAX_FILE_BYTES)} in-app limit.")
                 }
-                bytes == null -> toast("Could not read that file (${name.removePrefix("ERROR:")})")
-                bytes.isEmpty() -> toast("That file is empty.")
+                bytes == null -> {
+                    AppLog.e("firmware", "Could not read the selected file (${name.removePrefix("ERROR:")})")
+                    toast("Could not read that file (${name.removePrefix("ERROR:")})")
+                }
+                bytes.isEmpty() -> {
+                    AppLog.w("firmware", "Selected file '$name' is empty")
+                    toast("That file is empty.")
+                }
                 else -> {
                     LabHolder.fileBytes = bytes
                     LabHolder.fileName = name
@@ -171,6 +180,7 @@ class MainActivity : AppCompatActivity() {
                     LabHolder.clearAnalysis()
                     b.textFileName.text = "$name\n${Hex.humanBytes(bytes.size.toLong())} - ready to test"
                     refreshDeviceUi()
+                    AppLog.i("firmware", "Loaded '$name' (${Hex.humanBytes(bytes.size.toLong())})")
                     toast("Loaded ${Hex.humanBytes(bytes.size.toLong())}. Now run the safety test.")
                 }
             }
@@ -199,6 +209,7 @@ class MainActivity : AppCompatActivity() {
             LabHolder.clearAnalysis()
             b.textFileName.text = "${DemoFirmware.DISPLAY_NAME}\n${Hex.humanBytes(bytes.size.toLong())} - built-in demo (not a real router firmware)"
             refreshDeviceUi()
+            AppLog.i("firmware", "Built-in demo image generated (${Hex.humanBytes(bytes.size.toLong())})")
             toast("Demo image ready - it is synthetic, safe and shows the whole pipeline.")
         }
     }
@@ -213,9 +224,11 @@ class MainActivity : AppCompatActivity() {
             setBusy(true, "Starting…", 0)
             LabHolder.session?.stopWebUi()
             LabHolder.session = null
+            AppLog.i("analyze", "=== SAFETY TEST STARTED: '${LabHolder.fileName}' (${Hex.humanBytes(bytes.size.toLong())}) against ${device.display} ===")
             try {
                 val progress = object : ProgressSink {
                     override fun onProgress(percent: Int, message: String) {
+                        AppLog.i("analyze", "[$percent%] $message")
                         runOnUiThread {
                             b.scanProgress.progress = percent
                             b.textProgress.text = message
@@ -226,12 +239,24 @@ class MainActivity : AppCompatActivity() {
                     FirmwareLab.analyze(bytes, LabHolder.fileName, device, progress = progress)
                 }
                 LabHolder.session = session
+                session.webUiEventSink = { msg -> AppLog.i("emu-web", msg) }
                 setBusy(false)
                 renderResults(session)
                 b.bottomNav.selectedItemId = R.id.tab_analyze
+                val stagesOk = session.emulation.stages.count { it.ok }
+                AppLog.i(
+                    "analyze",
+                    "=== SAFETY TEST FINISHED: verdict=${session.report.verdict.display} risk=${session.report.riskScore}/100 " +
+                        "redFlags=${session.report.redFlags().size} stages=$stagesOk/${session.emulation.stages.size} " +
+                        "extracted=${session.unpack.importedFiles} shellSteps=${session.emulation.commandsRun} ===",
+                )
+                for (n in session.unpack.notes) AppLog.i("analyze", "unpack note: $n")
+                for (x in session.unpack.unsupported.take(50)) AppLog.w("analyze", "could not decode/read: $x")
+                if (session.unpack.unsupported.size > 50) AppLog.w("analyze", "... ${session.unpack.unsupported.size - 50} more unreadable items (all of them are in the full diagnostics)")
                 toast(if (session.report.redFlags().isNotEmpty()) "Finished - RED flags found, read them before flashing." else "Finished - report ready.")
             } catch (t: Throwable) {
                 setBusy(false)
+                AppLog.e("analyze", "SAFETY TEST FAILED for '${LabHolder.fileName}'", t)
                 toast("Analysis failed: ${t.message ?: t.javaClass.simpleName}")
             }
         }
@@ -356,13 +381,16 @@ class MainActivity : AppCompatActivity() {
     private fun startEmulatorServer() {
         val session = LabHolder.session ?: return toast("Run the safety test first.")
         lifecycleScope.launch {
+            session.webUiEventSink = { msg -> AppLog.i("emu-web", msg) }
             val server = withContext(Dispatchers.IO) { session.startWebUi() }
             if (server.port <= 0) {
+                AppLog.e("emu-web", "Loopback web server failed to start")
                 toast("Could not start the loopback web server.")
                 return@launch
             }
+            AppLog.i("emu-web", "Server up from dashboard at ${server.baseUrl} (login: ${server.loginUrl})")
             b.textEmulatorStatus.text = "Running on ${server.baseUrl}\n" +
-                "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login page: ${session.inventory.loginPage ?: "none"}\n" +
+                "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login: ${session.inventory.loginPage ?: "modelled by FlashGuard (no static form in image)"}\n" +
                 "Features found: ${session.inventory.features.size} groups, ${session.inventory.routes.size} pages"
             b.btnOpenEmulatorFull.isEnabled = true
             toast("Emulated web UI is up (loopback only).")
@@ -370,6 +398,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopEmulatorServer() {
+        AppLog.i("emu-web", "Stop requested from dashboard")
         LabHolder.session?.stopWebUi()
         b.textEmulatorStatus.text = "Stopped."
     }
@@ -378,6 +407,7 @@ class MainActivity : AppCompatActivity() {
         val session = LabHolder.session ?: return toast("Run the safety test first.")
         val server = session.startWebUi()
         if (server.port <= 0) return toast("Could not start the emulated web server.")
+        AppLog.i("emu-web", "Opening emulated UI (console=$console) at ${server.baseUrl}, login URL ${server.loginUrl}")
         startActivity(
             Intent(this, EmulatorActivity::class.java).apply {
                 putExtra("console", console)
@@ -395,11 +425,34 @@ class MainActivity : AppCompatActivity() {
             b.probeBox.visibility = View.VISIBLE
             b.textProbeSummary.text = "Contacting $host (read-only)…"
             b.probeFeaturesContainer.removeAllViews()
+            AppLog.i("watchdog", "=== LIVE CHECK STARTED for $host (try factory defaults: $tryCreds) ===")
             val result = withContext(Dispatchers.IO) { StabilityProbe.probe(host, tryDefaultCreds = tryCreds) }
             LabHolder.session?.probeResult = result
+            if (!result.reachable) {
+                AppLog.w("watchdog", "Router $host NOT reachable - ${result.notes.firstOrNull() ?: ""}")
+            } else {
+                AppLog.i(
+                    "watchdog",
+                    "RESULT: reachable, server=${result.serverHeader ?: "?"}, auth=${result.authScheme}, " +
+                        "loginPage=${result.loginPageFound}, requests=${result.requests}, errors=${result.errors}, " +
+                        "p50=${result.p50}ms, p95=${result.p95}ms, verdict=${if (result.stable) "STABLE" else "UNSTABLE"}",
+                )
+                result.defaultCredsWorked?.let { AppLog.w("watchdog", "Factory default credentials WORK on the live router: $it - change them!") }
+                for (n in result.notes) AppLog.w("watchdog", n)
+                for (f in result.afterLoginFeatures.take(25)) AppLog.i("watchdog", "page [${f.status}] ${f.path} (${f.bytes} B, ${f.ms} ms)")
+            }
             renderProbe(result)
             renderReport()
         }
+    }
+
+    private fun copyReport() {
+        val session = LabHolder.session ?: return toast("Run the safety test first.")
+        val text = if (b.radioJson.isChecked) session.jsonReport() else session.markdownReport()
+        (getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+            .setPrimaryClip(android.content.ClipData.newPlainText("FlashGuard report", text))
+        AppLog.i("report", "Safety report copied (${if (b.radioJson.isChecked) "JSON" else "Markdown"}, ${text.length} chars)")
+        toast("Report copied (${text.length} chars).")
     }
 
     private fun renderProbe(p: ProbeResult) {

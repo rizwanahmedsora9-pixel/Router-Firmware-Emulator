@@ -71,8 +71,11 @@ Rows worth understanding:
 
 ### 5. Click through the emulated firmware UI
 Tab **Emulator** -> *Start emulated web UI*. FlashGuard serves the firmware's own `www/` pages from
-a loopback-only server inside the app and shows them in a WebView: the real login page, the real
-feature pages, the modelled CGI endpoints. This is where "does this firmware actually come up and
+a loopback-only server inside the app and shows them in a WebView: the login page (the image's own,
+or a modelled one for firmwares that generate it on the server), the real feature pages, the
+modelled CGI endpoints. Sign in with the documented factory defaults - usually `admin` / `admin` -
+and the main page opens exactly like on the router; a wrong password shows the image's own
+"username or password is incorrect" page. This is where "does this firmware actually come up and
 look sane?" becomes tangible. Nothing leaves the phone; the server only listens on `127.0.0.1`.
 
 ### 6. Test the router you already have
@@ -86,11 +89,29 @@ Use it before flashing (baseline: is the router healthy?) and after flashing (di
 with the expected features?).
 
 ### 7. Export the evidence
-Tab **Report** -> toggle Markdown/JSON, then **Copy** or **Share** the report. The Markdown report
-is meant to be pasted into a forum post or a support ticket; the JSON is meant for tooling. Both
-contain the image identity (including SHA-256), the full compatibility matrix, the boot chain
-evidence, the emulated web-UI inventory, security findings and the recommended next steps -
-including the recovery procedure for your model.
+Tab **Report** -> toggle Markdown/JSON, then **Copy report to clipboard**, **Share / save report**
+(or the same buttons in the report viewer). The Markdown report is meant to be pasted into a forum
+post or a support ticket; the JSON is meant for tooling. Both contain the image identity (including
+SHA-256), the full compatibility matrix, the boot chain evidence, the emulated web-UI inventory,
+security findings and the recommended next steps - including the recovery procedure for your model.
+
+### 8. Send a full diagnostics bundle (report + all logs + watchdog)
+When you want to report a firmware result to the developer, open
+**Full diagnostics: report + logs + watchdog (copyable)** on the Report tab (or the report viewer's
+equivalent button). One screen, one **Copy all** button, and you get a single text block with:
+
+- the safety check report: verdict, risk score, all hardware-matrix rows, all findings, next steps;
+- the complete emulated boot chain and the full boot log (every stage detail and note);
+- services, interfaces, sandbox files, and every command the image ran that could not be simulated;
+- the whole web UI inventory and the emulated server's request log (each login attempt included);
+- every extraction warning and unreadable item (the "could not decode" errors), uncensored;
+- the **watchdog** (Live test) results in full: reachability, auth scheme, credential attempts,
+  every page checked with status/size/latency, all latency samples, p50/p95, the STABLE/UNSTABLE
+  verdict, notes and the complete request trace;
+- the app run log: every event, warning and error (with stack traces) since the app started, plus
+  the crash of the previous run if the app died.
+
+Paste that block into a chat, issue or email - it is self-contained, so nothing else is needed.
 
 ## Flashing checklist (the app cannot do this part for you)
 

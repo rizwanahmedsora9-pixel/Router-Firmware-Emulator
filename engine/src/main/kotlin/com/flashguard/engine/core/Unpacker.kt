@@ -602,7 +602,9 @@ class FirmwareFacts(
             val loginPages = webRoots.flatMap { root ->
                 vfs.list(root).filter { e ->
                     val n = e.name.lowercase()
-                    n.startsWith("login") || n.startsWith("index") && n.contains("login") || n.contains("auth")
+                    val errorPage = n.contains("autherror") || n.contains("error") || n.contains("fail") ||
+                        n.contains("denied") || n.contains("expired") || n.contains("logout")
+                    (n.startsWith("login") || n.startsWith("index") && n.contains("login") || n.contains("auth")) && !errorPage
                 }.map { it.path }
             }.distinct()
             val webHandlers = vfs.allFiles()

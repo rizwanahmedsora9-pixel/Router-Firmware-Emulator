@@ -27,22 +27,28 @@ class ReportActivity : AppCompatActivity() {
         b.btnToggleFormat.setOnClickListener {
             showingJson = !showingJson
             b.btnToggleFormat.text = if (showingJson) "Show Markdown" else "Show JSON"
+            AppLog.i("report", "Report format switched to ${if (showingJson) "JSON" else "Markdown"}")
             render()
         }
         b.btnCopy.setOnClickListener {
             val text = body()
             (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                 .setPrimaryClip(ClipData.newPlainText("FlashGuard report", text))
+            AppLog.i("report", "Report copied (${if (showingJson) "JSON" else "Markdown"}, ${text.length} chars)")
             Toast.makeText(this, "Report copied (${text.length} chars).", Toast.LENGTH_SHORT).show()
         }
         b.btnShare.setOnClickListener {
             val text = body()
+            AppLog.i("report", "Report shared (${if (showingJson) "JSON" else "Markdown"}, ${text.length} chars)")
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_SUBJECT, "FlashGuard report - ${LabHolder.fileName}")
                 putExtra(Intent.EXTRA_TEXT, text)
             }
             startActivity(Intent.createChooser(intent, "Share FlashGuard report"))
+        }
+        b.btnDiagnostics.setOnClickListener {
+            startActivity(Intent(this, DiagnosticsActivity::class.java))
         }
     }
 

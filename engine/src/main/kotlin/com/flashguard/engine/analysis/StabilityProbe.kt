@@ -45,6 +45,7 @@ object StabilityProbe {
         maxPages: Int = 20,
     ): ProbeResult {
         val notes = ArrayList<String>()
+        val trace = ArrayList<String>()
         val cleanHost = host.trim().removePrefix("http://").removePrefix("https://").substringBefore('/')
         val base = "http://$cleanHost"
         val latencies = ArrayList<Long>()
@@ -53,6 +54,7 @@ object StabilityProbe {
 
         val root = get(base + "/", timeoutMs)
         requests++
+        trace.add("GET / -> ${if (root.ok) root.status else "ERR"} ${root.ms} ms ${root.body.length} B")
         if (!root.ok) {
             errors++
             return ProbeResult(
@@ -61,6 +63,7 @@ object StabilityProbe {
                 defaultCredsTried = emptyList(), defaultCredsWorked = null, afterLoginFeatures = emptyList(),
                 latencyMs = latencies, errors = errors, requests = requests, stable = false,
                 notes = listOf("Could not reach $base - check the IP, that the router is on the same LAN, and that its web UI is enabled."),
+                trace = trace,
             )
         }
         latencies.add(root.ms)
@@ -83,6 +86,7 @@ object StabilityProbe {
                 tried.add("$user/${if (pass.isEmpty()) "(blank)" else pass}")
                 val ok = tryLogin(base, loginAction, user, pass, loginFields, timeoutMs)
                 requests++
+                trace.add("POST $loginAction ($user/${if (pass.isEmpty()) "(blank)" else pass}) -> ${if (ok) "accepted" else "rejected"}")
                 if (ok) {
                     credsWorked = "$user / ${if (pass.isEmpty()) "(blank)" else pass}"
                     break
@@ -101,6 +105,7 @@ object StabilityProbe {
             requests++
             if (!r.ok) errors++
             latencies.add(r.ms)
+            trace.add("GET ${page.path} -> ${if (r.ok) r.status else "ERR"} ${r.ms} ms ${r.body.length} B")
             features.add(ProbeFeature(name = page.name, path = page.path, status = r.status, bytes = r.body.length, ms = r.ms))
         }
 
@@ -110,6 +115,7 @@ object StabilityProbe {
             val r = get(base + "/", timeoutMs)
             requests++
             if (!r.ok) errors++ else latencies.add(r.ms)
+            trace.add("GET / (stability ${i + 1}/$repeats) -> ${if (r.ok) r.status else "ERR"} ${r.ms} ms")
         }
         val sorted = latencies.sorted()
         val p50 = if (sorted.isEmpty()) 0 else sorted[sorted.size / 2]
@@ -136,6 +142,7 @@ object StabilityProbe {
             requests = requests,
             stable = stable,
             notes = notes,
+            trace = trace,
         )
     }
 

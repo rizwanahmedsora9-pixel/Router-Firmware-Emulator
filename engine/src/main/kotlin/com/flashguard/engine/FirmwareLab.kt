@@ -1,5 +1,6 @@
 package com.flashguard.engine
 
+import com.flashguard.engine.analysis.Diagnostics
 import com.flashguard.engine.analysis.HardwareMatrix
 import com.flashguard.engine.analysis.Heuristics
 import com.flashguard.engine.analysis.Report
@@ -89,6 +90,7 @@ class LabSession(
     fun startWebUi(defaultUser: String = "admin", defaultPass: String = "admin"): WebUiLab.Server {
         stopWebUi()
         val s = WebUiLab.Server(unpack.vfs, inventory, facts, defaultUser to defaultPass)
+        s.eventSink = webUiEventSink
         return if (s.start()) {
             server = s
             s
@@ -101,6 +103,16 @@ class LabSession(
         server?.stop()
         server = null
     }
+
+    /**
+     * App-level sink for emulator web-server events (started/stopped, login attempts).
+     * Set by the app so the full run log also covers the emulated UI.
+     */
+    var webUiEventSink: ((String) -> Unit)? = null
+        set(value) {
+            field = value
+            server?.eventSink = value
+        }
 
     val webUiUrl: String? get() = server?.let { if (it.port > 0) it.baseUrl else null }
 
@@ -116,4 +128,25 @@ class LabSession(
         if (identity.model != null) append(" - ").append(identity.model)
         append(" | ").append(report.verdict.display)
     }
+
+    /** Current state of the emulated web server as report lines (empty when never started). */
+    fun webServerStatusLines(): List<String> {
+        val s = server ?: return emptyList()
+        return buildList {
+            add(if (s.port > 0) "Running: http://127.0.0.1:${s.port}/  (logged in: ${s.loggedIn}, ${s.requestCount.get()} request(s) served)" else "Started but not listening")
+            add("Login URL: ${s.loginUrl}")
+            val reqs = s.requestLogSnapshot()
+            if (reqs.isEmpty()) add("No requests served yet.")
+            else {
+                add("Request log (${reqs.size} most recent):")
+                for (r in reqs) add("  $r")
+            }
+        }
+    }
+
+    /**
+     * The complete copyable diagnostics bundle: safety report + all logs + watchdog results.
+     * The app appends its own run log on top (see [Diagnostics.bundle]).
+     */
+    fun diagnosticsText(): String = Diagnostics.build(this, webServerStatusLines())
 }

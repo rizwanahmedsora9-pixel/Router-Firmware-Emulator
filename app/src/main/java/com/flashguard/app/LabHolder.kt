@@ -20,6 +20,7 @@ object LabHolder {
     var usingDemoImage: Boolean = false
 
     fun clearAnalysis() {
+        if (session != null) AppLog.i("state", "Analysis session cleared (emulator server stopped)")
         session?.stopWebUi()
         session = null
     }
@@ -29,6 +30,7 @@ object LabHolder {
         fileBytes = null
         fileName = ""
         usingDemoImage = false
+        AppLog.i("state", "Loaded firmware cleared")
     }
 
     val bytes: ByteArray? get() = fileBytes
@@ -59,6 +61,15 @@ class Prefs(context: Context) {
     var routerIp: String
         get() = sp.getString("router_ip", "192.168.1.1") ?: "192.168.1.1"
         set(v) = sp.edit().putString("router_ip", v).apply()
+
+    /** Text of the last crash, kept so the diagnostics screen can show it after a restart. */
+    var lastCrash: String?
+        get() = sp.getString("last_crash", null)
+        set(v) = sp.edit().putString("last_crash", v).apply()
+
+    var lastCrashAt: Long
+        get() = sp.getLong("last_crash_at", 0L)
+        set(v) = sp.edit().putLong("last_crash_at", v).apply()
 
     fun loadedDevice(): DeviceProfile? = lastDeviceId?.let { DeviceDb.byId(it) }
 }

@@ -242,6 +242,8 @@ class FirmwareFacts(
     val rootfsUncompressed: Long = 0,
     val firmwareVersion: String? = null,
     val requiredFlashMb: Double? = null,
+    /** SoC family names found inside the extracted rootfs (board info, banners, preinit). */
+    val socHints: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
 ) {
     companion object {
@@ -366,6 +368,24 @@ class FirmwareFacts(
                 }
             }
 
+            // SoC family evidence: board-info files, banners and preinit scripts name the chip.
+            // Bounded scan: at most 160 small text files, 8 KB each - the chip name, when present,
+            // is almost always in /etc or /tmp/sysinfo. Binary collisions with a 6-char SoC token
+            // are negligible, and unknown families simply yield no hint (the row stays unverified).
+            val socHints = ArrayList<String>()
+            fun harvestSoc(text: String) {
+                SocFamilies.fromText(text)?.let { if (it.name !in socHints) socHints.add(it.name) }
+            }
+            configFiles.values.forEach { harvestSoc(it) }
+            var socScanned = 0
+            for (f in vfs.allFiles()) {
+                if (socScanned >= 160) break
+                if (f.size !in 8..16384) continue
+                socScanned++
+                vfs.readText(f.path, 8192)?.let { harvestSoc(it) }
+            }
+            if (socHints.isNotEmpty()) notes.add("SoC markers in rootfs: " + socHints.joinToString(", "))
+
             val rootfsSize = vfs.allFiles().sumOf { it.size }
             val requiredFlashMb = if (rootfsSize > 0) rootfsSize / (1024.0 * 1024.0) * 1.15 else null
 
@@ -392,6 +412,7 @@ class FirmwareFacts(
                 rootfsUncompressed = rootfsSize,
                 firmwareVersion = version ?: identity.version,
                 requiredFlashMb = requiredFlashMb,
+                socHints = socHints,
                 notes = notes,
             )
         }

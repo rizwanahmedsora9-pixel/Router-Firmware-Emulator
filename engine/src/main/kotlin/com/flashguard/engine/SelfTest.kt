@@ -117,7 +117,7 @@ private fun openWrtLikeRootfs(): Pair<List<Pair<String, ByteArray>>, List<String
         DISTRIB_RELEASE='23.05.3'
         DISTRIB_REVISION='r23809-234f1a2efa'
         DISTRIB_TARGET='ramips/mt7621'
-        DISTRIB_ARCH='mipsel_24kc'
+        DISTRIB_ARCH='mips_24kc'
         DISTRIB_DESCRIPTION='OpenWrt 23.05.3 r23809-234f1a2efa'
     """.trimIndent().toByteArray()
 
@@ -354,19 +354,77 @@ fun main(args: Array<String>) {
         r.expect(session.emulation.loginPage != null, "login page not found")
         r.expect(session.emulation.reachedInit(), "did not reach init")
         r.expect(session.emulation.reachedWebUi(), "did not reach web UI")
-        // mipsel image on a mipsel device must NOT be flagged as a CPU mismatch
+        // ramips/mt7621 images are BIG-endian MIPS: on an MT7621 device (also BE) there must be
+        // no CPU mismatch - the previous false red came from mislabeling MT76xx as mipsel.
         val archRow = session.report.features.first { it.feature == "CPU architecture" }
         r.expect(archRow.verdict != FeatureVerdict.INCOMPATIBLE, "false CPU mismatch: ${archRow.why}")
+        val socRow = session.report.features.first { it.feature.startsWith("SoC family") }
+        r.expect(socRow.verdict == FeatureVerdict.COMPATIBLE, "SoC row on matching MT7621 device: ${socRow.why}")
         r.expect(session.report.features.any { it.feature.contains("Wi-Fi") }, "no wi-fi row")
     }
 
-    r.check("full pipeline: the same mipsel image is RED on a big-endian MIPS router") {
+    r.check("full pipeline: same-arch ramips/mt7621 image is RED on a different-SoC (BCM4718) router") {
         val bcm47xx = DeviceDb.byId("asus-rt-n16")!!
         val session = FirmwareLab.analyze(gzTar, "openwrt-test.tar.gz", bcm47xx)
+        // Both sides are big-endian MIPS, so the CPU row alone cannot see the difference...
         val archRow = session.report.features.first { it.feature == "CPU architecture" }
-        r.expect(archRow.verdict == FeatureVerdict.INCOMPATIBLE, "expected INCOMPATIBLE, got ${archRow.verdict}")
+        r.expect(archRow.verdict != FeatureVerdict.INCOMPATIBLE, "MT7621 and BCM4718 are both MIPS BE: ${archRow.why}")
+        // ...the SoC family row catches it.
+        val socRow = session.report.features.first { it.feature.startsWith("SoC family") }
+        r.expect(socRow.verdict == FeatureVerdict.INCOMPATIBLE, "expected SoC mismatch, got ${socRow.verdict}: ${socRow.why}")
         r.expect(session.report.verdict.display.contains("DO NOT FLASH"), "verdict should be DO NOT FLASH, was ${session.report.verdict}")
         r.expect(session.report.redFlags().isNotEmpty(), "no red flags raised")
+    }
+
+    r.check("WR720N v1 (MT7620) image boots; matches v1 + generic MT7620; RED on the v2 (MT7628) board") {
+        val img = buildWr720nImage("MT7620AT", "V1", "mt7610")
+        val v1 = DeviceDb.byId("tplink-tl-wr720n-v1")!!
+        val v2 = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        val genericMt7620 = DeviceDb.byId("generic-mt7620-32-4")!!
+        val s1 = FirmwareLab.analyze(img, "TL-WR720N_v1.1.4_Build_20180101.bin", v1)
+        r.expect(s1.identity.primary == ImageFormat.TPLINK_BIN, "format ${s1.identity.primary}")
+        r.expect(s1.identity.vendor == com.flashguard.engine.core.Vendor.TP_LINK, "vendor ${s1.identity.vendor}")
+        r.expect(s1.identity.model == "TL-WR720N", "model ${s1.identity.model}")
+        r.expect(s1.unpack.vfs.fileCount > 5, "rootfs not extracted: ${s1.unpack.vfs.fileCount}")
+        r.expect(s1.emulation.reachedWebUi(), "v1 image did not reach the web UI in the sandbox")
+        val soc1 = s1.report.features.first { it.feature.startsWith("SoC family") }
+        r.expect(soc1.verdict == FeatureVerdict.COMPATIBLE, "SoC row on the v1 device: ${soc1.why}")
+        r.expect(s1.report.redFlags().isEmpty(), "false reds on the matching v1 device: " + s1.report.redFlags().joinToString { it.feature })
+        val sg = FirmwareLab.analyze(img, "TL-WR720N_v1.1.4_Build_20180101.bin", genericMt7620)
+        val socg = sg.report.features.first { it.feature.startsWith("SoC family") }
+        r.expect(socg.verdict == FeatureVerdict.COMPATIBLE, "SoC row on the generic MT7620 device: ${socg.why}")
+        // v2/v3/v4 boards carry an MT7628AN - a v1 (MT7620) kernel cannot run on them.
+        val s2 = FirmwareLab.analyze(img, "TL-WR720N_v1.1.4_Build_20180101.bin", v2)
+        val soc2 = s2.report.features.first { it.feature.startsWith("SoC family") }
+        r.expect(soc2.verdict == FeatureVerdict.INCOMPATIBLE, "v1 image on the v2 (MT7628) device must be RED: ${soc2.why}")
+        r.expect(s2.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH, got ${s2.report.verdict}")
+    }
+
+    r.check("WR720N v2 (MT7628) image: RED on the v1 (MT7620) board, clean on v2 + generic MT7628") {
+        val img = buildWr720nImage("MT7628AN", "V2", "mt76x2")
+        val v1 = DeviceDb.byId("tplink-tl-wr720n-v1")!!
+        val v2 = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        val v4 = DeviceDb.byId("tplink-tl-wr720n-v4")!!
+        val genericMt7628 = DeviceDb.byId("generic-mt7628-32-4")!!
+        val s1 = FirmwareLab.analyze(img, "TL-WR720N_v2.0.0_Build_20190505.bin", v1)
+        val soc1 = s1.report.features.first { it.feature.startsWith("SoC family") }
+        r.expect(soc1.verdict == FeatureVerdict.INCOMPATIBLE, "v2 image on the v1 (MT7620) device must be RED: ${soc1.why}")
+        r.expect(s1.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH, got ${s1.report.verdict}")
+        for (d in listOf(v2, v4, genericMt7628)) {
+            val s = FirmwareLab.analyze(img, "TL-WR720N_v2.0.0_Build_20190505.bin", d)
+            val soc = s.report.features.first { it.feature.startsWith("SoC family") }
+            r.expect(soc.verdict == FeatureVerdict.COMPATIBLE, "SoC row on ${d.id}: ${soc.why}")
+            r.expect(s.report.redFlags().isEmpty(), "false reds on ${d.id}: " + s.report.redFlags().joinToString { it.feature })
+        }
+    }
+
+    r.check("a genuine mipsel (brcm63xx) image stays RED on a big-endian MT7621 device") {
+        val img = com.flashguard.engine.tools.DemoFirmware.build(com.flashguard.engine.tools.DemoFirmware.Variant.OPENWRT_MIPSEL)
+        val mt7621 = DeviceDb.byId("tplink-archer-c6-v2")!!
+        val session = FirmwareLab.analyze(img, "openwrt-mipsel-test.bin", mt7621)
+        val archRow = session.report.features.first { it.feature == "CPU architecture" }
+        r.expect(archRow.verdict == FeatureVerdict.INCOMPATIBLE, "mipsel image on a BE device must be RED: ${archRow.why}")
+        r.expect(session.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH, got ${session.report.verdict}")
     }
 
     r.check("full pipeline: report export contains the key sections") {
@@ -540,7 +598,7 @@ private fun buildUImage(payload: ByteArray): ByteArray {
 }
 
 /** Real U-Boot image_header_t as produced by mkimage: version@4 type@5 os@6 arch@7 time@8 size@12 load@16 ep@20 dcrc@24 name@28. */
-private fun buildRealUImage(payload: ByteArray): ByteArray {
+private fun buildRealUImage(payload: ByteArray, name: String = "MIPS OpenWrt Linux-4.14.241"): ByteArray {
     val header = ByteArray(64)
     writeU32be(header, 0, 0x27051956)
     header[4] = 1  // version
@@ -551,9 +609,41 @@ private fun buildRealUImage(payload: ByteArray): ByteArray {
     writeU32be(header, 12, payload.size)
     writeU32be(header, 16, 0x80000000.toInt())
     writeU32be(header, 20, 0x80000000.toInt())
-    val name = "MIPS OpenWrt Linux-4.14.241".toByteArray()
-    System.arraycopy(name, 0, header, 28, minOf(name.size, 32))
+    val nameBytes = name.toByteArray().copyOf(32)
+    System.arraycopy(nameBytes, 0, header, 28, 32)
     return header + payload
+}
+
+/**
+ * TP-Link TL-WR720N style image: 256-byte TPLINK header (magic, vendor, version, hw_id, hw_rev)
+ * + a real mkimage uImage kernel + a real-layout SquashFS rootfs. The kernel banner and the
+ * board info file carry the SoC name the way stock MediaTek firmware does, so the SoC-family
+ * matrix row has real evidence to work with.
+ */
+private fun buildWr720nImage(soc: String, rev: String, wifiModule: String): ByteArray {
+    val header = ByteArray(256)
+    writeU32le(header, 0, 1)
+    "TPLINK".toByteArray().copyInto(header, 4)
+    "1.1.4 Build 20180101".toByteArray().copyOf(24).copyInto(header, 28)
+    "TL-WR720N".toByteArray().copyOf(24).copyInto(header, 52)
+    rev.toByteArray().copyOf(24).copyInto(header, 76)
+
+    val kernelBanner = (
+        "Linux version 3.10.54 (buildbot@tplink) (gcc version 4.8.3 20140819) #1 Fri Jan  5 10:00:00 CST 2018 mips\n" +
+            "Machine (friendly): TP-Link TL-WR720N $rev ($soc)\n"
+        ).toByteArray()
+    val uimage = buildRealUImage(gzip(kernelBanner), "Linux-3.10.54-$soc-WR720N-$rev")
+
+    val files = linkedMapOf<String, ByteArray>(
+        "/etc/device_info" to "Hardware ID: TL-WR720N\nHardware Rev: $rev\nSoC: $soc\n".toByteArray(),
+        "/etc/init.d/network" to "#!/bin/sh /etc/rc.common\nSTART=20\nstart() {\n  echo configuring network\n  ip addr add 192.168.1.1/24 dev br-lan\n  ifconfig eth0 up\n  hostname TL-WR720N\n}\n".toByteArray(),
+        "/etc/init.d/uhttpd" to "#!/bin/sh /etc/rc.common\nSTART=50\nstart() {\n  uhttpd -h /www -p 80\n}\n".toByteArray(),
+        "/etc/rc.d/S20network" to "#!/bin/sh\n/etc/init.d/network start\n".toByteArray(),
+        "/etc/rc.d/S50uhttpd" to "#!/bin/sh\n/etc/init.d/uhttpd start\n".toByteArray(),
+        "/www/login.html" to "<html><head><title>TP-Login</title></head><body><form action=\"/goform/login\">Login</form></body></html>".toByteArray(),
+        "/lib/modules/3.10.54/$wifiModule.ko" to ByteArray(1024) { (it % 199).toByte() },
+    )
+    return header + uimage + buildSquashFs(files)
 }
 
 /**

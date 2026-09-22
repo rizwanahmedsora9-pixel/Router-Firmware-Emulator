@@ -42,11 +42,27 @@ class FirmwareUnpacker(
 
         // Pre-seed nested regions discovered by the identifier (vendor header + payload layouts).
         for (layer in identity.layers.flatMap { it.flattenTree() }) {
-            if (layer.offset <= 0 || layer.length <= 0) continue
-            val start = layer.offset.toInt()
-            val end = minOf(bytes.size.toLong(), layer.offset + layer.length).toInt()
-            if (end - start < 64) continue
+            if (layer.offset <= 0) continue
             if (layer.format == ImageFormat.RAW) continue
+            var length = layer.length
+            if (length <= 0) {
+                // Sweep finds (no length). Recover a usable bound: SquashFS carries its
+                // bytes_used in the superblock; stream formats (gzip/xz/...) run to EOF and
+                // the decoder stops at the stream end anyway.
+                length = when (layer.format) {
+                    ImageFormat.SQUASHFS -> {
+                        val off = layer.offset.toInt()
+                        if (off + 48 <= bytes.size) {
+                            val bu = Bin.u64le(bytes, off + 40)
+                            if (bu in 1..(bytes.size - off).toLong()) bu else (bytes.size - off).toLong()
+                        } else (bytes.size - off).toLong()
+                    }
+                    else -> (bytes.size - layer.offset).toLong()
+                }
+            }
+            val start = layer.offset.toInt()
+            val end = minOf(bytes.size.toLong(), layer.offset + length).toInt()
+            if (end - start < 64) continue
             queue.add(Job(bytes.copyOfRange(start, end), "layer @0x${start.toString(16)} (${layer.format.label})", 1))
         }
 
@@ -91,16 +107,23 @@ class FirmwareUnpacker(
                 }
             }
             ImageFormat.UBOOT_LEGACY -> {
+                // size@12 is valid for both real U-Boot (image_header_t) and the compat layout.
+                // Compression must be sniffed from the payload: real uImage headers have no comp
+                // field, and reading byte 31 (the old code path) lands in ih_name on real images.
                 val size = Bin.u32be(data, 12)
-                val comp = Bin.u8(data, 31)
-                if (size in 1 until (data.size - 64 + 1).toLong().toInt() && comp != 0) {
+                if (size in 1 until (data.size - 64 + 1).toLong().toInt()) {
                     val payload = data.copyOfRange(64, minOf(data.size, 64 + size.toInt()))
                     val decoded = Compression.decode(payload)
-                    if (decoded != null) {
-                        notes.add("uImage payload decompressed (${decoded.kind.label}, ${Hex.humanBytes(decoded.bytes.size)})")
-                        queue.add(Job(decoded.bytes, "${job.origin} uImage payload", job.depth + 1))
-                    } else {
-                        unsupported.add("uImage payload uses ${compName(comp)}, which is not decodable on-device")
+                    when {
+                        decoded != null -> {
+                            notes.add("uImage payload decompressed (${decoded.kind.label}, ${Hex.humanBytes(decoded.bytes.size)})")
+                            queue.add(Job(decoded.bytes, "${job.origin} uImage payload", job.depth + 1))
+                        }
+                        Bin.u8(payload, 0) == 0x7F && payload.size > 4 &&
+                            payload[1].toInt() and 0xFF == 0x45 && payload[2].toInt() and 0xFF == 0x4C &&
+                            payload[3].toInt() and 0xFF == 0x46 ->
+                            unsupported.add("uImage payload is a raw (uncompressed) ELF kernel - no rootfs to extract")
+                        else -> unsupported.add("uImage payload is not a recognised compressed stream (${job.origin})")
                     }
                 }
             }
@@ -219,6 +242,8 @@ class FirmwareFacts(
     val rootfsUncompressed: Long = 0,
     val firmwareVersion: String? = null,
     val requiredFlashMb: Double? = null,
+    /** SoC family names found inside the extracted rootfs (board info, banners, preinit). */
+    val socHints: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
 ) {
     companion object {
@@ -275,7 +300,8 @@ class FirmwareFacts(
             val wirelessDrivers = modules.filter {
                 it.contains("ath") || it.contains("mt7") || it.contains("mt76") || it.contains("rt2") ||
                     it.contains("rtl") || it.contains("brcm") || it.contains("mac80211") || it.contains("cfg80211") ||
-                    it.contains("iwl") || it.contains("carl9170") || it.contains("rt2800") || it.startsWith("wl")
+                    it.contains("iwl") || it.contains("carl9170") || it.contains("rt2800") ||
+                    it == "wl" || it.startsWith("wl-") || it.contains("b43") || it == "broadcom-wl"
             }
             val switchDrivers = modules.filter {
                 it.contains("switch") || it.contains("dsa") || it.contains("mvsw") || it.contains("rtl83") || it.contains("mt7530")
@@ -342,6 +368,24 @@ class FirmwareFacts(
                 }
             }
 
+            // SoC family evidence: board-info files, banners and preinit scripts name the chip.
+            // Bounded scan: at most 160 small text files, 8 KB each - the chip name, when present,
+            // is almost always in /etc or /tmp/sysinfo. Binary collisions with a 6-char SoC token
+            // are negligible, and unknown families simply yield no hint (the row stays unverified).
+            val socHints = ArrayList<String>()
+            fun harvestSoc(text: String) {
+                SocFamilies.fromText(text)?.let { if (it.name !in socHints) socHints.add(it.name) }
+            }
+            configFiles.values.forEach { harvestSoc(it) }
+            var socScanned = 0
+            for (f in vfs.allFiles()) {
+                if (socScanned >= 160) break
+                if (f.size !in 8..16384) continue
+                socScanned++
+                vfs.readText(f.path, 8192)?.let { harvestSoc(it) }
+            }
+            if (socHints.isNotEmpty()) notes.add("SoC markers in rootfs: " + socHints.joinToString(", "))
+
             val rootfsSize = vfs.allFiles().sumOf { it.size }
             val requiredFlashMb = if (rootfsSize > 0) rootfsSize / (1024.0 * 1024.0) * 1.15 else null
 
@@ -368,6 +412,7 @@ class FirmwareFacts(
                 rootfsUncompressed = rootfsSize,
                 firmwareVersion = version ?: identity.version,
                 requiredFlashMb = requiredFlashMb,
+                socHints = socHints,
                 notes = notes,
             )
         }

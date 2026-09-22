@@ -36,7 +36,7 @@ object DeviceDb {
         ),
         DeviceProfile(
             id = "tplink-archer-c6-v2", brand = "TP-Link", model = "Archer C6", revision = "v2",
-            soc = "MediaTek MT7621A", cpuFamily = CpuFamily.MIPSEL, cpuCores = 2, cpuMhz = 880,
+            soc = "MediaTek MT7621A", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 2, cpuMhz = 880,
             ramMb = 128, flashMb = 16, flashLayout = "16 MB NOR", flashType = "NOR",
             bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7603E (2.4 GHz)", "MediaTek MT7613 (5 GHz)"),
             extraFeatures = listOf("5x Gigabit Ethernet"), usb = false, ethernetPorts = 5, gigabit = true,
@@ -54,7 +54,7 @@ object DeviceDb {
         ),
         DeviceProfile(
             id = "tplink-archer-c20-v4", brand = "TP-Link", model = "Archer C20", revision = "v4",
-            soc = "MediaTek MT7628", cpuFamily = CpuFamily.MIPSEL, cpuCores = 1, cpuMhz = 580,
+            soc = "MediaTek MT7628", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
             ramMb = 64, flashMb = 8, flashLayout = "8 MB NOR", flashType = "NOR",
             bootloader = "U-Boot", wifiChips = listOf("MT7628 (2.4 GHz)", "MT7610E (5 GHz)"),
             extraFeatures = listOf("4x 100M LAN"), ethernetPorts = 5, gigabit = false,
@@ -70,10 +70,50 @@ object DeviceDb {
             openwrtSupport = "yes (ath79)", stockLogin = "admin / admin",
             recovery = "TFTP recovery at 192.168.0.1",
         ),
+        DeviceProfile(
+            id = "tplink-tl-wr720n-v1", brand = "TP-Link", model = "TL-WR720N", revision = "v1",
+            soc = "MediaTek MT7620AT", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
+            ramMb = 32, flashMb = 4, flashLayout = "4 MB NOR (u-boot + kernel + rootfs)", flashType = "NOR",
+            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7610 (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
+            openwrtSupport = "yes (ramips/mt7620)", stockLogin = "admin / admin",
+            recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
+            notes = "v1 uses the MT7620AT SoC. v2/v3/v4 use the MT7628AN - v1 firmware will NOT boot on them and vice versa.",
+        ),
+        DeviceProfile(
+            id = "tplink-tl-wr720n-v2", brand = "TP-Link", model = "TL-WR720N", revision = "v2",
+            soc = "MediaTek MT7628AN", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
+            ramMb = 32, flashMb = 4, flashLayout = "4 MB NOR (u-boot + kernel + rootfs)", flashType = "NOR",
+            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7628AN built-in (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
+            openwrtSupport = "yes (ramips/mt76x8)", stockLogin = "admin / admin",
+            recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
+            notes = "v2/v3/v4 share the MT7628AN SoC (v1 is a different SoC: MT7620AT). v2/v3 have 4 MB flash, v4 has 8 MB - check the image size against the revision.",
+        ),
+        DeviceProfile(
+            id = "tplink-tl-wr720n-v3", brand = "TP-Link", model = "TL-WR720N", revision = "v3",
+            soc = "MediaTek MT7628AN", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
+            ramMb = 32, flashMb = 4, flashLayout = "4 MB NOR (u-boot + kernel + rootfs)", flashType = "NOR",
+            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7628AN built-in (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
+            openwrtSupport = "yes (ramips/mt76x8)", stockLogin = "admin / admin",
+            recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
+            notes = "v2/v3/v4 share the MT7628AN SoC (v1 is a different SoC: MT7620AT). v2/v3 have 4 MB flash, v4 has 8 MB - check the image size against the revision.",
+        ),
+        DeviceProfile(
+            id = "tplink-tl-wr720n-v4", brand = "TP-Link", model = "TL-WR720N", revision = "v4",
+            soc = "MediaTek MT7628AN", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
+            ramMb = 32, flashMb = 8, flashLayout = "8 MB NOR (u-boot + kernel + rootfs)", flashType = "NOR",
+            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7628AN built-in (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
+            openwrtSupport = "yes (ramips/mt76x8)", stockLogin = "admin / admin",
+            recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
+            notes = "v4 has 8 MB flash (v2/v3 have 4 MB) on the same MT7628AN SoC. v1 (MT7620AT) is a different SoC - v1 firmware will not boot here.",
+        ),
         // ---------------------------------------------------------------- Netgear
         DeviceProfile(
             id = "netgear-r6220", brand = "Netgear", model = "R6220", revision = "v1",
-            soc = "MediaTek MT7621ST", cpuFamily = CpuFamily.MIPSEL, cpuCores = 2, cpuMhz = 880,
+            soc = "MediaTek MT7621ST", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 2, cpuMhz = 880,
             ramMb = 128, flashMb = 128, flashLayout = "128 MB NAND (UBI)", flashType = "NAND",
             bootloader = "U-Boot", wifiChips = listOf("MT7603E (2.4 GHz)", "MT7612E (5 GHz)"),
             extraFeatures = listOf("5x Gigabit Ethernet", "USB 2.0"), usb = true, ethernetPorts = 5, gigabit = true,
@@ -155,7 +195,7 @@ object DeviceDb {
         // ---------------------------------------------------------------- Xiaomi / Redmi
         DeviceProfile(
             id = "xiaomi-mi-4a-gigabit", brand = "Xiaomi", model = "Mi Router 4A", revision = "Gigabit Edition",
-            soc = "MediaTek MT7621A", cpuFamily = CpuFamily.MIPSEL, cpuCores = 2, cpuMhz = 880,
+            soc = "MediaTek MT7621A", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 2, cpuMhz = 880,
             ramMb = 128, flashMb = 16, flashLayout = "16 MB NOR", flashType = "NOR",
             bootloader = "U-Boot (bootloader is locked; needs vendor exploit to install OpenWrt)",
             wifiChips = listOf("MT7603E (2.4 GHz)", "MT7613 (5 GHz)"),
@@ -166,7 +206,7 @@ object DeviceDb {
         ),
         DeviceProfile(
             id = "xiaomi-mi-4c", brand = "Xiaomi", model = "Mi Router 4C", revision = "",
-            soc = "MediaTek MT7628", cpuFamily = CpuFamily.MIPSEL, cpuCores = 1, cpuMhz = 580,
+            soc = "MediaTek MT7628", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
             ramMb = 64, flashMb = 16, flashLayout = "16 MB NOR", flashType = "NOR",
             bootloader = "U-Boot (locked)", wifiChips = listOf("MT7628 (2.4 GHz)"),
             ethernetPorts = 3, gigabit = false, openwrtSupport = "yes (ramips/mt76x8) after unlocking",
@@ -175,7 +215,7 @@ object DeviceDb {
         // ---------------------------------------------------------------- GL.iNet / Linksys / OpenWrt hardware
         DeviceProfile(
             id = "glinet-mt300n-v2", brand = "GL.iNet", model = "GL-MT300N-V2 (Mango)", revision = "",
-            soc = "MediaTek MT7628", cpuFamily = CpuFamily.MIPSEL, cpuCores = 1, cpuMhz = 580,
+            soc = "MediaTek MT7628", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
             ramMb = 128, flashMb = 16, flashLayout = "16 MB NOR", flashType = "NOR",
             bootloader = "U-Boot", wifiChips = listOf("MT7628 (2.4 GHz)"),
             extraFeatures = listOf("USB 2.0", "2x 100M Ethernet"), usb = true, ethernetPorts = 2, gigabit = false,
@@ -184,7 +224,7 @@ object DeviceDb {
         ),
         DeviceProfile(
             id = "glinet-gl-mt1300", brand = "GL.iNet", model = "GL-MT1300 (Beryl)", revision = "",
-            soc = "MediaTek MT7621A", cpuFamily = CpuFamily.MIPSEL, cpuCores = 2, cpuMhz = 880,
+            soc = "MediaTek MT7621A", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 2, cpuMhz = 880,
             ramMb = 256, flashMb = 32, flashLayout = "32 MB NOR", flashType = "NOR",
             bootloader = "U-Boot", wifiChips = listOf("MT7603E (2.4 GHz)", "MT7615 (5 GHz)"),
             extraFeatures = listOf("3x Gigabit Ethernet", "USB 3.0"), usb = true, ethernetPorts = 3, gigabit = true,
@@ -240,11 +280,33 @@ object DeviceDb {
         ),
         DeviceProfile(
             id = "generic-mipsel-16-128", brand = "Generic", model = "MediaTek MT7621 16/128 device", revision = "",
-            soc = "Generic MediaTek MT7621", cpuFamily = CpuFamily.MIPSEL, cpuCores = 2, cpuMhz = 880,
+            soc = "Generic MediaTek MT7621", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 2, cpuMhz = 880,
             ramMb = 128, flashMb = 16, flashLayout = "16 MB NOR", flashType = "NOR",
             bootloader = "U-Boot", wifiChips = listOf("unknown (mt76-class)"),
             ethernetPorts = 5, gigabit = true, openwrtSupport = "likely (ramips/mt7621)",
             stockLogin = "unknown", recovery = "TFTP recovery",
+        ),
+        DeviceProfile(
+            id = "generic-mt7620-32-4", brand = "Generic", model = "MediaTek MT7620 32/4 device", revision = "",
+            soc = "Generic MediaTek MT7620AT", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
+            ramMb = 32, flashMb = 4, flashLayout = "4 MB NOR", flashType = "NOR",
+            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7610 or MT7620 built-in (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("typical 2012-2016 budget router"), ethernetPorts = 4, gigabit = false,
+            openwrtSupport = "likely (ramips/mt7620)", stockLogin = "unknown",
+            recovery = "TFTP recovery if the bootloader still runs",
+            notes = "Same hardware class as TP-Link TL-WR720N v1, WDR3600 v1 and other MT7620AT routers. " +
+                "Test MT7620-board images here; v2/v3/v4 WR720N (MT7628) images will be flagged as a SoC mismatch.",
+        ),
+        DeviceProfile(
+            id = "generic-mt7628-32-4", brand = "Generic", model = "MediaTek MT7628 32/4 device", revision = "",
+            soc = "Generic MediaTek MT7628AN", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
+            ramMb = 32, flashMb = 4, flashLayout = "4 MB NOR (8 MB on some boards, e.g. WR720N v4)", flashType = "NOR",
+            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7628 built-in (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("typical 2015-2019 budget router"), ethernetPorts = 4, gigabit = false,
+            openwrtSupport = "likely (ramips/mt76x8)", stockLogin = "unknown",
+            recovery = "TFTP recovery if the bootloader still runs",
+            notes = "Same hardware class as TP-Link TL-WR720N v2/v3/v4 and other MT7628AN routers. " +
+                "Test MT7628-board images here; v1 WR720N (MT7620) images will be flagged as a SoC mismatch.",
         ),
         DeviceProfile(
             id = "custom", brand = "My own router", model = "Custom / not in the list", revision = "",

@@ -254,24 +254,70 @@ object FirmwareIdentifier {
         }
     }
 
+    /**
+     * Two on-disk conventions exist:
+     *  - "uboot" (the real U-Boot image_header_t): version@4, type@5, os@6, arch@7, time@8,
+     *    size@12, load@16, ep@20, dcrc@24, name@28. This is what mkimage (and therefore OpenWrt,
+     *    DD-WRT, Netgear CHK kernels, ...) produces.
+     *  - "compat": the layout this tool originally emitted in its own fixtures (os@28, arch@29,
+     *    type@30, comp@31, name@32). Kept so older test images keep parsing identically.
+     *
+     * Returns 0 = uboot, 1 = compat.
+     */
+    internal fun detectUImageLayout(data: ByteArray, base: Int): Int {
+        fun asciiCstr(off: Int, len: Int): Boolean {
+            var sawChar = false
+            for (i in off until off + len) {
+                if (i >= data.size) return false
+                val c = data[i].toInt() and 0xFF
+                if (c == 0) break
+                if (c < 0x20 || c > 0x7E) return false
+                sawChar = true
+            }
+            return sawChar
+        }
+        val realOk = data[base + 5].toInt() and 0xFF in 0..7 &&
+            data[base + 6].toInt() and 0xFF in 0..20 &&
+            data[base + 7].toInt() and 0xFF in 0..30 &&
+            asciiCstr(base + 28, 32)
+        val compatOk = data[base + 28].toInt() and 0xFF in 0..20 &&
+            data[base + 29].toInt() and 0xFF in 0..30 &&
+            asciiCstr(base + 32, 32)
+        return when {
+            realOk -> 0
+            compatOk -> 1
+            else -> 0
+        }
+    }
+
     private fun parseUImage(data: ByteArray, base: Int, layers: MutableList<Layer>, evidence: MutableList<String>, archHints: MutableSet<String>) {
         if (base + 64 > data.size) return
+        val layout = detectUImageLayout(data, base)
         val size = Bin.u32be(data, base + 12)
         val load = Bin.u32be(data, base + 16)
         val entry = Bin.u32be(data, base + 20)
-        val os = Bin.u8(data, base + 28)
-        val arch = Bin.u8(data, base + 29)
-        val type = Bin.u8(data, base + 30)
-        val comp = Bin.u8(data, base + 31)
-        val name = Bin.cstr(data, base + 32, 32)
+        val os: Int
+        val arch: Int
+        val type: Int
+        val comp: Int // -1 when the format has no comp field (real U-Boot) - inferred from payload
+        val name: String
+        if (layout == 0) {
+            type = data[base + 5].toInt() and 0xFF
+            os = data[base + 6].toInt() and 0xFF
+            arch = data[base + 7].toInt() and 0xFF
+            comp = -1
+            name = Bin.cstr(data, base + 28, 32)
+        } else {
+            os = Bin.u8(data, base + 28)
+            arch = Bin.u8(data, base + 29)
+            type = Bin.u8(data, base + 30)
+            comp = Bin.u8(data, base + 31)
+            name = Bin.cstr(data, base + 32, 32)
+        }
         val archName = when (arch) {
             2 -> "ARM"; 3 -> "x86"; 5 -> "MIPS"; 7 -> "PowerPC"; 22 -> "ARM64"; 26 -> "RISC-V"
             8 -> "M68K"; 20 -> "IA64"; 21 -> "NIOS2"; 25 -> "SH"; 16 -> "PPC64"
             else -> "arch#$arch"
-        }
-        val compName = when (comp) {
-            0 -> "none"; 1 -> "gzip"; 2 -> "bzip2"; 3 -> "lzma"; 4 -> "lzo"; 5 -> "lz4"; 6 -> "zstd"
-            else -> "comp#$comp"
         }
         val typeName = when (type) {
             1 -> "standalone"; 2 -> "kernel"; 3 -> "ramdisk"; 4 -> "multi"; 5 -> "firmware"; 6 -> "script"; 7 -> "filesystem"
@@ -280,18 +326,16 @@ object FirmwareIdentifier {
         val osName = when (os) {
             5 -> "Linux"; 9 -> "OpenBSD"; 17 -> "RTEMS"; 14 -> "VxWorks"; 4 -> "NetBSD"; else -> "os#$os"
         }
-        evidence.add(
-            "U-Boot uImage '$name': $osName/$archName/$typeName compressed=$compName, " +
-                "load 0x${load.toString(16)}, entry 0x${entry.toString(16)}, payload ${Hex.humanBytes(size)}"
-        )
         if (archName != "arch#$arch") archHints.add(archName.lowercase())
         archHints.add("u-boot-load:0x${load.toString(16)}")
         val payloadStart = base + 64
         val payloadEnd = minOf(data.size, payloadStart + size.toInt())
         val children = ArrayList<Layer>()
+        var sniffedKind: Compression.Kind? = null
         if (payloadEnd > payloadStart) {
             val sub = data.copyOfRange(payloadStart, payloadEnd)
             val kind = Compression.sniff(sub)
+            sniffedKind = kind
             if (kind != null) {
                 children.add(Layer(kindToFormat(kind), "uImage payload: ${kind.label}", payloadStart.toLong(), (payloadEnd - payloadStart).toLong()))
                 if (kind.decodable && sub.size < 24 * 1024 * 1024) {
@@ -311,6 +355,17 @@ object FirmwareIdentifier {
                 }
             }
         }
+        val compName = when {
+            comp == -1 -> sniffedKind?.label ?: "none (no compression magic in payload)"
+            else -> when (comp) {
+                0 -> "none"; 1 -> "gzip"; 2 -> "bzip2"; 3 -> "lzma"; 4 -> "lzo"; 5 -> "lz4"; 6 -> "zstd"
+                else -> "comp#$comp"
+            }
+        }
+        evidence.add(
+            "U-Boot uImage '$name': $osName/$archName/$typeName compressed=$compName, " +
+                "load 0x${load.toString(16)}, entry 0x${entry.toString(16)}, payload ${Hex.humanBytes(size)}"
+        )
         layers.add(
             Layer(
                 ImageFormat.UBOOT_LEGACY,
@@ -485,9 +540,11 @@ object FirmwareIdentifier {
             if (det.first == ImageFormat.TRX) parseTrx(data.copyOfRange(off, data.size), layers, evidence, archHints)
         }
         // Sweep: search each distinctive magic once, limit work on huge files.
+        // Magics marked atZeroOnly (e.g. TP-Link's 01 00 00 00) are NOT swept: they occur
+        // constantly in arbitrary binary data and would flood the layer list with noise.
         val sweepLimit = minOf(limit, 8 * 1024 * 1024)
         val searchEnd = if (limit > sweepLimit) sweepLimit else limit
-        for (m in MAGICS.filter { it.format in setOf(ImageFormat.SQUASHFS, ImageFormat.CRAMFS, ImageFormat.NETGEAR_CHK, ImageFormat.TPLINK_BIN, ImageFormat.TRX, ImageFormat.UBOOT_LEGACY) }) {
+        for (m in MAGICS.filter { !it.atZeroOnly && it.format in setOf(ImageFormat.SQUASHFS, ImageFormat.CRAMFS, ImageFormat.NETGEAR_CHK, ImageFormat.TPLINK_BIN, ImageFormat.TRX, ImageFormat.UBOOT_LEGACY) }) {
             if (found >= maxFindings) break
             var from = 0
             var perMagic = 0

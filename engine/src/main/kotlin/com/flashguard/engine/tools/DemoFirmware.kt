@@ -23,7 +23,10 @@ object DemoFirmware {
         )
 
         val (distro, target, arch, soc, vendorName) = when (variant) {
-            Variant.OPENWRT_MIPSEL -> listOf("OpenWrt", "ramips/mt7621", "mipsel_24kc", "MediaTek MT7621", "OpenWrt 23.05.3")
+            // A real little-endian MIPS build: the brcm63xx target (BCM63xx SoCs are mipsel).
+            // ramips/mt76xx images are BIG-endian, so an "mipsel MT7621" demo would be
+            // a firmware that does not exist.
+            Variant.OPENWRT_MIPSEL -> listOf("OpenWrt", "brcm63xx/generic", "mipsel", "Broadcom BCM6358", "OpenWrt 23.05.3")
             Variant.OPENWRT_MIPSBE -> listOf("OpenWrt", "ath79/generic", "mips_24kc", "Qualcomm QCA9531", "OpenWrt 23.05.3")
             Variant.DDWRT_MIPSBE -> listOf("DD-WRT", "broadcom", "mips", "Broadcom BCM4718", "DD-WRT v3.0-r54216")
         }

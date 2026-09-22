@@ -32,6 +32,7 @@ class SquashFsReader(private val data: ByteArray) {
         val bytesUsed: Long,
         val idTableStart: Long,
         val inodeTableStart: Long,
+        val inodeTableSize: Long,
         val directoryTableStart: Long,
         val fragmentTableStart: Long,
         val lookupTableStart: Long,
@@ -182,21 +183,30 @@ class SquashFsReader(private val data: ByteArray) {
 
     fun parse(): Boolean {
         if (!sniff(data)) return false
-        val inodes = Bin.u32le(data, 4)
-        val blockSize = Bin.u32le(data, 12).toInt()
-        val fragments = Bin.u32le(data, 16)
-        val compression = Bin.u16le(data, 20)
-        val blockLog = Bin.u16le(data, 22)
-        val flags = Bin.u16le(data, 24)
-        val major = Bin.u16le(data, 28)
-        val minor = Bin.u16le(data, 30)
-        val rootInode = Bin.u64le(data, 32)
-        val bytesUsed = Bin.u64le(data, 40)
-        val idTableStart = Bin.u64le(data, 48)
-        val inodeTableStart = Bin.u64le(data, 64)
-        val directoryTableStart = Bin.u64le(data, 72)
-        val fragmentTableStart = Bin.u64le(data, 80)
-        val lookupTableStart = Bin.u64le(data, 88)
+        // Offsets follow the on-disk squashfs_super_block (128 bytes):
+        // magic0 inodes4 mtime8 blocksize12 fragments16 comp20 blocklog22 flags24
+        // idsize26 major28 minor30 rootinode32 bytesused40 idstart48 idsize56
+        // inodestart64 inodesize72 dirstart80 dirsize88 fragstart96 fragsize104
+        // lookupstart112 lookupsize120
+        fun u32(o: Int): Long = if (o + 4 <= data.size) Bin.u32le(data, o) else 0L
+        fun u64(o: Int): Long = if (o + 8 <= data.size) Bin.u64le(data, o) else 0L
+        fun u16(o: Int): Int = if (o + 2 <= data.size) Bin.u16le(data, o) else 0
+        val inodes = u32(4)
+        val blockSize = u32(12).toInt()
+        val fragments = u32(16)
+        val compression = u16(20)
+        val blockLog = u16(22)
+        val flags = u16(24)
+        val major = u16(28)
+        val minor = u16(30)
+        val rootInode = u64(32)
+        val bytesUsed = u64(40)
+        val idTableStart = u64(48)
+        val inodeTableStart = u64(64)
+        val inodeTableSize = u64(72)
+        val directoryTableStart = u64(80)
+        val fragmentTableStart = u64(96)
+        val lookupTableStart = u64(112)
         superblock = Super(
             inodes = inodes,
             blockSize = if (blockSize in 4096..1_048_576) blockSize else 131_072,
@@ -210,6 +220,7 @@ class SquashFsReader(private val data: ByteArray) {
             bytesUsed = bytesUsed,
             idTableStart = idTableStart,
             inodeTableStart = inodeTableStart,
+            inodeTableSize = inodeTableSize,
             directoryTableStart = directoryTableStart,
             fragmentTableStart = fragmentTableStart,
             lookupTableStart = lookupTableStart,
@@ -374,9 +385,13 @@ class SquashFsReader(private val data: ByteArray) {
     private fun readDirectory(inode: Inode, maxEntries: Int): List<Pair<String, Inode>> {
         val out = ArrayList<Pair<String, Inode>>()
         val stream = MetaStream(hdr.directoryTableStart)
-        val declared = if (inode.type == 1) inode.dirSize + 3 else inode.dirSize
-        val listing = stream.read(inode.dirStartBlock, inode.dirOffset, declared.toInt().coerceAtMost(1 shl 20))
-            ?: return out
+        // The on-disk dir_size field is an entry count (n-1), NOT a byte length, so the
+        // listing must be bounded by the metadata block itself: read the whole block that
+        // contains the directory entries and let the entry groups' count fields drive the
+        // walk (bounded below).
+        val block = stream.blockAt(inode.dirStartBlock) ?: return out
+        if (inode.dirOffset !in 0 until block.bytes.size) return out
+        val listing = block.bytes.copyOfRange(inode.dirOffset, block.bytes.size)
         var p = 0
         while (p + 12 <= listing.size && out.size < maxEntries) {
             var count = Bin.u32le(listing, p)
@@ -386,13 +401,16 @@ class SquashFsReader(private val data: ByteArray) {
             if (count > 8192) break
             count += 1
             for (i in 0 until count) {
-                if (p + 8 > listing.size) break
+                // On-disk squashfs_dir_entry: u16 entry_offset, u16 inode_delta,
+                // u16 name_length (len-1), name[] - i.e. a 6-byte header, and each
+                // entry occupies 6 + round4(len) bytes (squashfs_calc_dir_size).
+                if (p + 6 > listing.size) break
                 val entryOffset = Bin.u16le(listing, p)
                 val inodeDelta = Bin.u16le(listing, p + 2).toShort().toInt()
-                val nameLen = Bin.u16le(listing, p + 6) + 1
-                if (p + 8 + nameLen > listing.size) break
-                val name = String(listing, p + 8, nameLen, Charsets.ISO_8859_1)
-                p += 8 + nameLen
+                val nameLen = Bin.u16le(listing, p + 4) + 1
+                if (nameLen <= 0 || p + 6 + nameLen > listing.size) break
+                val name = String(listing, p + 6, nameLen, Charsets.ISO_8859_1)
+                p += 6 + ((nameLen + 3) and -4) // round4
                 directoryEntriesSeen++
                 val child = inodeByRef[blockKey(startBlock, entryOffset)]
                 if (child == null) continue
@@ -450,7 +468,9 @@ class SquashFsReader(private val data: ByteArray) {
     private fun readFragment(index: Long): ByteArray? {
         fragmentCache[index]?.let { return it }
         if (hdr.fragments == 0L || hdr.fragmentTableStart == 0L || index < 0 || index >= hdr.fragments) return null
-        val perMeta = maxOf(1, hdr.blockSize / 16)
+        // Fragment table entries are 16 bytes and live in fixed 8192-byte metadata blocks
+        // (SQUASHFS_METADATA_BLOCK), independent of the data block size.
+        val perMeta = 8192 / 16
         val indexBlockNo = (index / perMeta).toInt()
         val meta = fragmentTableMeta(indexBlockNo) ?: return null
         val within = (index - indexBlockNo.toLong() * perMeta).toInt()

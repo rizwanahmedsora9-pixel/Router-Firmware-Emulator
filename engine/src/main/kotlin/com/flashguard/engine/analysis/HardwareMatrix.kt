@@ -9,6 +9,7 @@ import com.flashguard.engine.core.HardwareFeature
 import com.flashguard.engine.core.ImageFormat
 import com.flashguard.engine.core.ImageIdentity
 import com.flashguard.engine.core.RiskVerdict
+import com.flashguard.engine.core.SocFamilies
 import com.flashguard.engine.core.UnpackResult
 import com.flashguard.engine.util.Text
 
@@ -30,6 +31,7 @@ object HardwareMatrix {
         val rows = ArrayList<HardwareFeature>()
 
         rows += archRow(identity, facts, device)
+        rows += socRow(identity, facts, device)
         rows += flashSizeRow(facts, unpack, device)
         rows += flashTypeRow(identity, facts, device)
         rows += bootloaderRow(identity, device)
@@ -40,7 +42,7 @@ object HardwareMatrix {
         rows += deviceTreeRow(identity, device)
         rows += flashMethodRow(identity, unpack, device)
         rows += wholeFlashRow(identity)
-        rows += bootEvidenceRow(emulation)
+        rows += bootEvidenceRow(emulation, unpack)
         rows += recoveryRow(device)
         rows += formatSupportRow(identity, unpack)
         return rows
@@ -69,6 +71,21 @@ object HardwareMatrix {
                     "The kernel cannot execute on this SoC - flashing it produces a non-booting (bricked) router.",
                 "Find the build for ${device.cpuFamily.display} (e.g. the correct OpenWrt target for your model).",
             )
+            (device.cpuFamily == CpuFamily.MIPS_BE || device.cpuFamily == CpuFamily.MIPSEL) &&
+                hints.contains("mips") &&
+                !hints.contains("mipsel") && !hints.contains("brcm63") && !hints.contains("xburst") &&
+                !hints.contains("ramips") && !hints.contains("mt7620") && !hints.contains("mt7621") &&
+                !hints.contains("mt7628") && !hints.contains("mt76x8") && !hints.contains("rt305x") &&
+                !hints.contains("ar71xx") && !hints.contains("ath79") && !hints.contains("mipseb") ->
+                HardwareFeature(
+                    "CPU architecture", "image: MIPS (endianness not declared)", "device: ${device.cpuFamily.display}",
+                    FeatureVerdict.PARTIAL,
+                    "The image identifies itself as MIPS, but neither its header nor its kernel banner states the " +
+                        "endianness (uImage 'MIPS' covers both mips and mipsel). A kernel built for the wrong " +
+                        "endianness will not boot.",
+                    "Check the SoC on the label (Atheros/QCA and MediaTek MT76xx are big-endian; Broadcom BCM63xx " +
+                        "is little-endian) and prefer a build that names your model explicitly.",
+                )
             deviceKeywords.any { hints.contains(it) } -> HardwareFeature(
                 "CPU architecture", "image: ${imageArch ?: imageTarget ?: hints.take(24)}", "device: ${device.cpuFamily.display}",
                 FeatureVerdict.COMPATIBLE,
@@ -96,8 +113,18 @@ object HardwareMatrix {
     private fun contradictoryArch(hints: String, family: CpuFamily): String? {
         if (hints.isBlank()) return null
         val isMips = hints.contains("mips") || hints.contains("ar7") || hints.contains("ath7") || hints.contains("ramips") || hints.contains("mt76")
-        val isMipsel = hints.contains("mipsel") || hints.contains("ramips") || hints.contains("mt7620") || hints.contains("mt7621") || hints.contains("mt76x8")
-        val isMipsBe = (hints.contains("ar71xx") || hints.contains("ath79") || hints.contains("mips") && !isMipsel) && isMips
+        // Little-endian MIPS router lineage: explicit "mipsel", Broadcom BCM63xx, Xburst.
+        // NOTE: "ramips", "mt7620/mt7621/mt7628", "mt76x8" are NOT little-endian markers -
+        // the MediaTek MT76xx and Ralink SoCs (the ramips OpenWrt target) are BIG-endian.
+        val isMipsel = hints.contains("mipsel") || hints.contains("brcm63") || hints.contains("xburst")
+        // Bare "mips" is ENDIAN-AMBIGUOUS: the uImage arch code 5 ("MIPS") and kernel
+        // banners ("... mips") cover both big- and little-endian builds. Only explicit
+        // markers may be treated as big-endian, otherwise a vendor's own mipsel
+        // kernel (e.g. a BCM63xx board) would be falsely flagged as a brick.
+        val isMipsBe = (hints.contains("ar71xx") || hints.contains("ath79") ||
+            hints.contains("mipseb") || hints.contains("mips_be") || hints.contains("big-endian") ||
+            hints.contains("ramips") || hints.contains("mt7620") || hints.contains("mt7621") ||
+            hints.contains("mt7628") || hints.contains("mt76x8") || hints.contains("rt305x")) && isMips
         val isArm = hints.contains("armv7") || hints.contains("armhf") || hints.contains("cortex-a7") || hints.contains("cortex-a9") || hints.contains("arm32")
         val isArm64 = hints.contains("aarch64") || hints.contains("arm64") || hints.contains("cortex-a5")
         val isX86 = hints.contains("x86") || hints.contains("i386") || hints.contains("amd64")
@@ -110,7 +137,7 @@ object HardwareMatrix {
                 else -> null
             }
             CpuFamily.MIPSEL -> when {
-                isMipsBe && !isMipsel -> "MIPS big-endian (ar71xx/ath79)"
+                isMipsBe && !isMipsel -> "MIPS big-endian (ar71xx/ath79/ramips/MT76xx)"
                 isArm || isArm64 -> "ARM"
                 isX86 -> "x86"
                 else -> null
@@ -136,6 +163,65 @@ object HardwareMatrix {
                 else -> null
             }
             CpuFamily.UNKNOWN -> null
+        }
+    }
+
+    /**
+     * Chip-level check: which SoC family was the image built for vs which SoC is in the router.
+     *
+     * This catches what the CPU-architecture row structurally cannot: images for a *different
+     * SoC of the same architecture* (MT7620 vs MT7628, QCA9531 vs MT7621, ...). Those are the
+     * "same model, different hardware revision" bricks - e.g. a TL-WR720N v1 (MT7620AT) image
+     * on a v2 (MT7628AN) board.
+     *
+     * Honesty rule: it only claims a verdict when BOTH sides name a specific SoC family. A
+     * generic/custom device profile ("MediaTek MT7620", "unknown") or an image without any SoC
+     * string yields UNVERIFIED, never a guessed mismatch.
+     */
+    private fun socRow(identity: ImageIdentity, facts: FirmwareFacts, device: DeviceProfile): HardwareFeature {
+        val imageText = (identity.archHints + identity.evidence +
+            listOfNotNull(facts.target, facts.arch, facts.distro, facts.deviceModelHint) +
+            facts.socHints).joinToString(" ")
+        val imageSoc = SocFamilies.fromText(imageText)
+        val deviceSoc = SocFamilies.fromText(device.soc)
+        return when {
+            imageSoc == null && deviceSoc == null -> HardwareFeature(
+                "SoC family (chip match)", "image: not declared", "device: not specific enough",
+                FeatureVerdict.UNVERIFIED,
+                "Neither the image nor the device profile names a specific SoC, so the chip-level match " +
+                    "cannot be checked.",
+                "Images are normally only safe for the exact model + hardware revision - confirm the label.",
+            )
+            imageSoc == null -> HardwareFeature(
+                "SoC family (chip match)", "image: not declared", "device: ${deviceSoc!!.name}",
+                FeatureVerdict.UNVERIFIED,
+                "The image does not declare which SoC it was built for (no device tree, board string or " +
+                    "SoC marker found), so the chip-level match against ${deviceSoc.name} could not be verified.",
+                "Compare the image name/version with the exact model + revision on the label before flashing.",
+            )
+            deviceSoc == null -> HardwareFeature(
+                "SoC family (chip match)", "image targets ${imageSoc!!.name}", "device: not specific enough",
+                FeatureVerdict.UNVERIFIED,
+                "The image targets ${imageSoc.name}, but the selected device profile does not name a specific " +
+                    "SoC to compare against.",
+                "Pick the exact model (or the matching generic SoC profile) to enable the chip-level check.",
+            )
+            imageSoc.name == deviceSoc.name -> HardwareFeature(
+                "SoC family (chip match)", "image: ${imageSoc.name}", "device: ${deviceSoc.name}",
+                FeatureVerdict.COMPATIBLE,
+                "The image's SoC family (${imageSoc.name}) matches the router's SoC - the strongest hardware " +
+                    "match available in a static check.",
+            )
+            else -> HardwareFeature(
+                "SoC family (chip match)", "image targets ${imageSoc.name}", "device has ${deviceSoc.name}",
+                FeatureVerdict.INCOMPATIBLE,
+                "This image was built for a ${imageSoc.name} board, but your router has a ${deviceSoc.name}. " +
+                    "Even when both are the same CPU architecture, the kernel will not find its hardware on the " +
+                    "other SoC and the router will not boot - this is how 'same model, different hardware " +
+                    "revision' flashes brick a router.",
+                "Use the build that names your exact model + revision (e.g. the matching TP-Link hardware " +
+                    "version of the WR720N family).",
+            )
         }
     }
 
@@ -198,11 +284,13 @@ object HardwareMatrix {
                 "Use the NOR build for this model.",
             )
             imageIsNor && deviceNand -> HardwareFeature(
-                "Flash type (NOR vs NAND)", "image looks like a NOR/raw flash image", "device has NAND flash",
-                FeatureVerdict.INCOMPATIBLE,
-                "This image expects a raw NOR layout. Writing raw NOR data into a NAND device destroys the UBI layout the " +
-                    "bootloader needs.",
-                "Use the NAND/UBI (factory) image for this model.",
+                "Flash type (NOR vs NAND)", "image is not a UBI image", "device has NAND flash",
+                FeatureVerdict.PARTIAL,
+                "This image carries no UBI/UBIFS container. Many NAND boards (e.g. Netgear MT7621 models) boot a plain " +
+                    "squashfs from NAND, in which case this is normal; on boards whose bootloader requires UBI it will not " +
+                    "fit. The container alone cannot decide.",
+                "If this is the vendor's official file for your exact model, it matches your board's layout. Otherwise " +
+                    "prefer the factory/NAND image for this model.",
             )
             device.flashType == "SD" -> HardwareFeature(
                 "Flash type (NOR vs NAND)", "image type: ${identity.primary.label}", "device boots from ${device.flashType}",
@@ -222,8 +310,10 @@ object HardwareMatrix {
         val expectsCfe = device.bootloader.contains("CFE", true)
         val expectsUboot = device.bootloader.contains("U-Boot", true)
         val imageLooksCfe = format == ImageFormat.TRX || format == ImageFormat.NETGEAR_CHK || format == ImageFormat.DLINK_SHR
-        val imageLooksUboot = format == ImageFormat.UBOOT_LEGACY || format == ImageFormat.UBOOT_FIT ||
-            identity.layers.flatMap { it.flattenTree() }.any { it.format == ImageFormat.UBOOT_LEGACY || it.format == ImageFormat.UBOOT_FIT }
+        // Only the PRIMARY container decides the boot path: vendor containers (Netgear CHK,
+        // ASUS .zip, TP-Link .bin) routinely carry a uImage-format *kernel* inside, which is
+        // normal and does not make the image "U-Boot style".
+        val imageLooksUboot = format == ImageFormat.UBOOT_LEGACY || format == ImageFormat.UBOOT_FIT
         return when {
             expectsCfe && imageLooksUboot -> HardwareFeature(
                 "Bootloader format", "image is a U-Boot style image", "device uses CFE",
@@ -297,7 +387,9 @@ object HardwareMatrix {
             deviceTokens.any { tok -> d.contains(tok) } ||
                 (d.contains("mt76") && deviceTokens.any { it.startsWith("mt7") }) ||
                 (d.contains("ath") && deviceTokens.any { it.startsWith("qca") || it.startsWith("ar9") }) ||
-                (d.contains("brcm") && deviceTokens.any { it.startsWith("bcm") }) ||
+                // Broadcom: proprietary "wl" (stock ASUS/D-Link firmware), open "b43", in-kernel "brcm*"
+                ((d == "wl" || d.contains("b43") || d.contains("brcm")) &&
+                    deviceTokens.any { it.startsWith("bcm") || it.startsWith("broadcom") }) ||
                 (d.contains("rtl") && deviceTokens.contains("rtl"))
         }
         return when {
@@ -455,7 +547,7 @@ object HardwareMatrix {
         }
     }
 
-    private fun bootEvidenceRow(emulation: EmulationResult?): HardwareFeature {
+    private fun bootEvidenceRow(emulation: EmulationResult?, unpack: UnpackResult? = null): HardwareFeature {
         if (emulation == null) {
             return HardwareFeature(
                 "Static boot test", "emulation not run", "no boot evidence",
@@ -465,6 +557,10 @@ object HardwareMatrix {
         }
         val reachedInit = emulation.reachedInit()
         val reachedWeb = emulation.reachedWebUi()
+        // "Could not extract a rootfs" (UBI/UBIFS/JFFS2/EXT mounts, vendor-encrypted blobs)
+        // is NOT the same as "init failed": the first is a verification limit, not a hardware
+        // mismatch. Flagging it red would tell users "do not flash" their own stock images.
+        val staticallyUnreadable = unpack != null && unpack.vfs.fileCount <= 5
         return when {
             reachedWeb -> HardwareFeature(
                 "Static boot test", "reached init + web UI in the sandbox", "${emulation.commandsRun} shell steps in ${emulation.elapsedMs} ms",
@@ -477,6 +573,14 @@ object HardwareMatrix {
                 FeatureVerdict.PARTIAL,
                 "Init scripts executed, but the web UI never came up in emulation. On the real device this usually still " +
                     "boots, but the admin page may be missing or broken.",
+            )
+            staticallyUnreadable -> HardwareFeature(
+                "Static boot test", "rootfs could not be read in the sandbox", "${emulation.commandsRun} shell steps",
+                FeatureVerdict.UNVERIFIED,
+                "This image's rootfs is inside a container the phone cannot mount statically (UBI/UBIFS, JFFS2, ext4, or a " +
+                    "vendor-encrypted blob), so no boot evidence could be gathered. That is a limitation of the on-device " +
+                    "check, not evidence that the image is incompatible.",
+                "Verify on a test unit, or use a build with a squashfs/gzip rootfs that this app can read.",
             )
             else -> HardwareFeature(
                 "Static boot test", "boot chain did not complete in the sandbox", "${emulation.commandsRun} shell steps",

@@ -240,6 +240,23 @@ object WebUiLab {
         val baseUrl: String get() = "http://127.0.0.1:$port/"
 
         /**
+         * Optional sink for app-level logging of server lifecycle and login attempts
+         * (never the password itself). Called from server threads; the sink must be thread-safe.
+         */
+        var eventSink: ((String) -> Unit)? = null
+
+        private fun emit(message: String) {
+            try {
+                eventSink?.invoke(message)
+            } catch (_: Throwable) {
+            }
+        }
+
+        /** Thread-safe copy of the served-request log for the diagnostics report. */
+        @Synchronized
+        fun requestLogSnapshot(): List<String> = ArrayList(requestLog)
+
+        /**
          * The URL path a browser must open first: the image's own login page if it has one,
          * otherwise the modelled login form FlashGuard generates for it.
          */
@@ -262,8 +279,10 @@ object WebUiLab {
                 isDaemon = true
                 start()
             }
+            emit("web server started on 127.0.0.1:$port")
             true
         } catch (t: Throwable) {
+            emit("web server failed to start: ${t.message ?: t.javaClass.simpleName}")
             false
         }
 
@@ -274,6 +293,7 @@ object WebUiLab {
             } catch (_: Throwable) {
             }
             thread?.interrupt()
+            emit("web server stopped after $requestCount request(s)")
         }
 
         private fun acceptLoop(ss: ServerSocket) {
@@ -449,6 +469,7 @@ object WebUiLab {
                 }
                 "/__flashguard/logout" -> {
                     loggedIn = false
+                    emit("logout requested")
                     redirect(out, loginUrl)
                 }
                 "/__flashguard/console" -> {
@@ -476,6 +497,7 @@ object WebUiLab {
                 else if (pass == null && (key.contains("pass") || key.contains("pwd"))) pass = v
             }
             val ok = user == defaultCreds.first && pass == defaultCreds.second
+            emit("login attempt user='${user ?: ""}' -> ${if (ok) "accepted" else "REJECTED (wrong username or password)"}")
             if (ok) {
                 loggedIn = true
                 redirect(out, "/")

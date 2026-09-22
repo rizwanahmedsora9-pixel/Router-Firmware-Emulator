@@ -24,15 +24,18 @@ class LoginActivity : AppCompatActivity() {
             val user = b.inputUser.text.toString().trim()
             val pass = b.inputPass.text.toString()
             if (user == prefs.lockUser && pass == prefs.lockPass) {
+                AppLog.i("app-lock", "App unlocked")
                 prefs.lockEnabled = true
                 startActivity(Intent(this, MainActivity::class.java))
                 finish()
             } else {
+                AppLog.w("app-lock", "Failed app unlock attempt (user '$user')")
                 b.textLoginError.visibility = View.VISIBLE
                 b.textLoginError.text = "Wrong username or password. Default is admin / admin (change it any time from the dashboard)."
             }
         }
         b.btnSkip.setOnClickListener {
+            AppLog.i("app-lock", "App lock disabled by user")
             prefs.lockEnabled = false
             startActivity(Intent(this, MainActivity::class.java))
             finish()

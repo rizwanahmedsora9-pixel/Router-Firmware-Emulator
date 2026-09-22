@@ -1,5 +1,6 @@
 package com.flashguard.engine
 
+import com.flashguard.engine.analysis.Diagnostics
 import com.flashguard.engine.compression.Compression
 import com.flashguard.engine.container.SquashFsReader
 import com.flashguard.engine.core.BootStageNames
@@ -7,6 +8,7 @@ import com.flashguard.engine.core.DeviceProfile
 import com.flashguard.engine.core.FeatureVerdict
 import com.flashguard.engine.core.FirmwareIdentifier
 import com.flashguard.engine.core.ImageFormat
+import com.flashguard.engine.core.ProbeResult
 import com.flashguard.engine.device.DeviceDb
 import com.flashguard.engine.fs.VirtualFs
 import com.flashguard.engine.util.Bin
@@ -662,6 +664,37 @@ fun main(args: Array<String>) {
         } finally {
             server.stop()
         }
+    }
+
+    r.check("diagnostics bundle: full report + all logs + watchdog results, copyable") {
+        val device = DeviceDb.byId("tplink-archer-c6-v2")!!
+        val session = FirmwareLab.analyze(gzTar, "openwrt-test.tar.gz", device)
+        val text = session.diagnosticsText()
+        for (marker in listOf(
+            "FlashGuard FULL DIAGNOSTICS", "VERDICT", "BOOT CHAIN", "FULL BOOT LOG",
+            "EMULATION DETAILS", "WEB UI IN IMAGE", "EMULATED WEB SERVER", "EXTRACTION / UNPACK",
+            "HOW THE FILE WAS IDENTIFIED", "FIRMWARE FACTS", "HARDWARE COMPATIBILITY MATRIX",
+            "SECURITY / QUALITY FINDINGS", "WATCHDOG: LIVE ROUTER CHECK", session.identity.sha256,
+        )) {
+            r.expect(text.contains(marker), "diagnostics missing section '$marker'")
+        }
+        r.expect(text.contains("Not run yet"), "watchdog section should say 'not run' before a live check")
+        // A finished watchdog run must appear with its full request trace.
+        session.probeResult = ProbeResult(
+            host = "192.168.1.1", reachable = true, webServer = "mini_httpd/1.19", loginPageFound = true,
+            loginFormFields = listOf("username", "password"), authScheme = "form login", serverHeader = "mini_httpd/1.19",
+            cookies = emptyList(), defaultCredsTried = listOf("admin/admin"), defaultCredsWorked = null,
+            afterLoginFeatures = listOf(com.flashguard.engine.core.ProbeFeature("Status", "/status.htm", 200, 1200, 14)),
+            latencyMs = listOf(12L, 14L, 9L, 40L), errors = 0, requests = 9, stable = true,
+            notes = listOf("all good"), trace = listOf("GET / -> 200 11 ms 900 B", "GET /status.htm -> 200 14 ms 1200 B"),
+        )
+        val withProbe = session.diagnosticsText()
+        r.expect(withProbe.contains("Stability verdict: STABLE"), "watchdog verdict missing")
+        r.expect(withProbe.contains("GET /status.htm -> 200 14 ms 1200 B"), "watchdog request trace missing")
+        r.expect(withProbe.contains("All latency samples (ms): 12, 14, 9, 40"), "latency samples missing")
+        // The app layer wraps engine diagnostics + its own run log into one bundle.
+        val bundle = Diagnostics.bundle(withProbe, "01-01 10:00:00.000 I/app: hello\n")
+        r.expect(bundle.contains("APP RUN LOG") && bundle.contains("I/app: hello"), "bundle missing the app run log")
     }
 
     r.check("every device profile is internally consistent") {

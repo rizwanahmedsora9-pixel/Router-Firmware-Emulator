@@ -311,6 +311,8 @@ data class ProbeResult(
     val requests: Int,
     val stable: Boolean,
     val notes: List<String>,
+    /** Every request the watchdog made, in order, with status and latency - for full reports. */
+    val trace: List<String> = emptyList(),
 ) {
     val p50: Long get() = latencyMs.sorted().let { if (it.isEmpty()) 0 else it[it.size / 2] }
     val p95: Long get() = latencyMs.sorted().let { if (it.isEmpty()) 0 else it[(it.size * 95) / 100] }

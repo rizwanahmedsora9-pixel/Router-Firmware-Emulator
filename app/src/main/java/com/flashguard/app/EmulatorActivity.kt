@@ -27,8 +27,10 @@ class EmulatorActivity : AppCompatActivity() {
             finish()
             return
         }
+        AppLog.i("emu-web", "Emulator screen opened (console=${intent.getBooleanExtra("console", false)})")
         server = session.startWebUi()
         if (server.port <= 0) {
+            AppLog.e("emu-web", "Loopback web server failed to start from the emulator screen")
             b.textEmuStatus.text = "Could not start the loopback web server."
             return
         }
@@ -53,12 +55,16 @@ class EmulatorActivity : AppCompatActivity() {
                 return if (host == "127.0.0.1" || host == "localhost") {
                     false
                 } else {
+                    AppLog.w("emu-web", "Blocked external navigation to $host (emulation stays on this device)")
                     b.textEmuStatus.text = "Blocked external navigation to ${request.url.host} (emulation stays on this device)."
                     true
                 }
             }
         }
-        b.btnEmuLogin.setOnClickListener { web.loadUrl(home) }
+        b.btnEmuLogin.setOnClickListener {
+            AppLog.i("emu-web", "Login page reloaded ($home)")
+            web.loadUrl(home)
+        }
         b.btnEmuConsole.setOnClickListener { web.loadUrl(base + "__flashguard/console") }
         b.btnEmuReload.setOnClickListener { web.reload() }
         if (intent.getBooleanExtra("console", false)) {

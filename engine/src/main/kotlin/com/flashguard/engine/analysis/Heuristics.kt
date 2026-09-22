@@ -29,12 +29,17 @@ object Heuristics {
             out.add(
                 Finding(
                     "raw-image", "Unrecognised raw image",
-                    "No known container or filesystem was found. This is usually a whole-flash dump or an encrypted vendor image.",
+                    "No container, filesystem, archive or compression stream was found anywhere in the file, so nothing inside " +
+                        "it could be checked. That is normal for a whole-flash dump, a vendor-encrypted image or a file that is " +
+                        "not firmware at all - it is not evidence that the image is incompatible with your router. " +
+                        "Start with the file's first bytes (see the identification evidence) and compare them with the vendor's own download.",
                     FindingLevel.WARN, category = "structure",
                 )
             )
         }
-        if (unpack.unsupported.isNotEmpty()) {
+        // Only meaningful when *something* was readable: for a fully opaque image the findings above
+        // already explain that nothing could be read, and repeating it adds noise, not information.
+        if (unpack.unsupported.isNotEmpty() && unpack.inspected) {
             out.add(
                 Finding(
                     "partial-extraction", "Only partially inspectable on-device",
@@ -46,8 +51,10 @@ object Heuristics {
         if (identity.evidence.any { it.contains("encrypted", true) }) {
             out.add(
                 Finding(
-                    "encrypted", "Payload looks encrypted or signed",
-                    "Entropy and structure suggest the vendor wrapped the firmware. Nothing inside could be verified.",
+                    "encrypted", "Payload may be encrypted or signed",
+                    "No container was recognised and the byte entropy is near-random, which is what an encrypted or " +
+                        "vendor-wrapped payload looks like - but it is also what plain compressed data looks like. " +
+                        "Nothing inside could be verified either way.",
                     FindingLevel.WARN, category = "structure",
                 )
             )
@@ -269,11 +276,23 @@ object Heuristics {
                 )
             )
         }
-        if (vfs.fileCount > 0) {
+        // The virtual filesystem always contains its own root directory, so fileCount alone would
+        // report "1 objects, 0 B" for an image nothing was extracted from - which reads like a
+        // partially successful extraction instead of "no rootfs at all".
+        if (unpack.importedFiles > 0) {
             out.add(
                 Finding(
                     "rootfs", "Rootfs: ${vfs.humanSummary()}",
                     "Extracted ${unpack.importedFiles} objects; biggest areas: " + biggestAreas(vfs).joinToString(", "),
+                    FindingLevel.INFO, category = "structure",
+                )
+            )
+        } else {
+            out.add(
+                Finding(
+                    "rootfs", "Root filesystem: none extracted",
+                    "The engine could not read any files out of this image, so there is no init, no web UI and no module list " +
+                        "to inspect. Content-based rows are marked 'needs verification' rather than being reported as missing.",
                     FindingLevel.INFO, category = "structure",
                 )
             )

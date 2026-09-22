@@ -11,6 +11,7 @@ import com.flashguard.engine.core.ImageIdentity
 import com.flashguard.engine.core.RiskVerdict
 import com.flashguard.engine.core.SocFamilies
 import com.flashguard.engine.core.UnpackResult
+import com.flashguard.engine.util.Hex
 import com.flashguard.engine.util.Text
 
 /**
@@ -32,16 +33,16 @@ object HardwareMatrix {
 
         rows += archRow(identity, facts, device)
         rows += socRow(identity, facts, device)
-        rows += flashSizeRow(facts, unpack, device)
+        rows += flashSizeRow(identity, facts, device)
         rows += flashTypeRow(identity, facts, device)
         rows += bootloaderRow(identity, device)
-        rows += signatureRow(identity, device)
-        rows += wirelessRow(facts, device)
-        rows += usbRow(facts, device)
+        rows += signatureRow(identity, device, unpack)
+        rows += wirelessRow(facts, device, unpack)
+        rows += usbRow(facts, device, unpack)
         rows += ramRow(facts, device)
         rows += deviceTreeRow(identity, device)
         rows += flashMethodRow(identity, unpack, device)
-        rows += wholeFlashRow(identity)
+        rows += wholeFlashRow(identity, device)
         rows += bootEvidenceRow(emulation, unpack)
         rows += recoveryRow(device)
         rows += formatSupportRow(identity, unpack)
@@ -225,16 +226,30 @@ object HardwareMatrix {
         }
     }
 
-    private fun flashSizeRow(facts: FirmwareFacts, unpack: UnpackResult, device: DeviceProfile): HardwareFeature {
+    private fun flashSizeRow(identity: ImageIdentity, facts: FirmwareFacts, device: DeviceProfile): HardwareFeature {
         val needed = facts.requiredFlashMb
         val deviceMb = device.flashMb
+        val fileMb = identity.totalSize / (1024.0 * 1024.0)
+        val fileText = "image rootfs ${needed?.let { String.format(java.util.Locale.US, "%.1f MB", it) } ?: "unknown"} " +
+            "(file ${Hex.humanBytes(identity.totalSize)})"
         return when {
+            // Evidence, not absence of evidence: a file that is bigger than the whole flash chip
+            // cannot be written, no matter what is inside it.
+            deviceMb > 0 && fileMb > deviceMb * 1.02 -> HardwareFeature(
+                "Flash size", "$fileText - larger than the flash chip",
+                "device has $deviceMb MB",
+                FeatureVerdict.INCOMPATIBLE,
+                "The file is ${Hex.humanBytes(identity.totalSize)}, which is larger than your router's entire ${deviceMb} MB flash. " +
+                    "The write would fail part-way through and leave an incomplete (bricked) image - or the bootloader would " +
+                    "reject it as too big.",
+                "Double-check you downloaded the image for this model/revision (or the correct 8 MB variant) and that the download is not corrupt.",
+            )
             deviceMb == 0 || needed == null -> HardwareFeature(
-                "Flash size", "image rootfs ${needed?.let { String.format(java.util.Locale.US, "%.1f MB", it) } ?: "unknown"}",
+                "Flash size", fileText,
                 "device: ${if (deviceMb > 0) "$deviceMb MB" else "unknown"}",
                 FeatureVerdict.UNVERIFIED,
-                "Could not compare sizes: " + if (deviceMb == 0) "the device profile has no flash size." else "the image rootfs size could not be measured.",
-                "Cheapest safe check: compare the firmware size shown here with the free space your router reports.",
+                "Could not compare sizes: " + if (deviceMb == 0) "the device profile has no flash size." else "the image rootfs size could not be measured (nothing inside the file could be unpacked).",
+                "Compare this file's size with the vendor's download for your exact model + revision, and with the free space your router reports.",
             )
             needed > deviceMb -> HardwareFeature(
                 "Flash size", "image needs ~${String.format(java.util.Locale.US, "%.1f MB", needed)} (uncompressed rootfs)",
@@ -252,7 +267,7 @@ object HardwareMatrix {
                 "Keep an eye on free space; consider a smaller build (e.g. without LuCI extras).",
             )
             else -> HardwareFeature(
-                "Flash size", "image needs ~${String.format(java.util.Locale.US, "%.1f MB", needed)} (${unpack.importedFiles} files)",
+                "Flash size", "image needs ~${String.format(java.util.Locale.US, "%.1f MB", needed)}",
                 "device has ${deviceMb} MB",
                 FeatureVerdict.COMPATIBLE,
                 "The extracted rootfs fits comfortably in your router's flash with room for the overlay.",
@@ -342,7 +357,7 @@ object HardwareMatrix {
         }
     }
 
-    private fun signatureRow(identity: ImageIdentity, device: DeviceProfile): HardwareFeature {
+    private fun signatureRow(identity: ImageIdentity, device: DeviceProfile, unpack: UnpackResult): HardwareFeature {
         val vendorSigned = identity.primary == ImageFormat.TPLINK_SIGNED ||
             identity.evidence.any { it.contains("encrypted or signed", true) } ||
             identity.evidence.any { it.contains("high entropy", true) }
@@ -361,6 +376,13 @@ object HardwareMatrix {
                     "rootfs. Nothing inside could be verified or emulated.",
                 "Treat this image as opaque: only flash it if it came from the vendor for this exact model.",
             )
+            !unpack.inspected -> HardwareFeature(
+                "Vendor signature", "unknown - the image could not be unpacked", "device requires signed firmware: ${device.requiresSignedFirmware}",
+                FeatureVerdict.UNVERIFIED,
+                "Nothing inside the file could be read, so the engine cannot tell whether it is signed, and it cannot tell " +
+                    "whether it is even an image for this device.",
+                "Confirm where the file came from and that it names your exact model + revision before flashing it.",
+            )
             else -> HardwareFeature(
                 "Vendor signature", "image is not signed", "device does not require signatures",
                 FeatureVerdict.COMPATIBLE,
@@ -369,9 +391,26 @@ object HardwareMatrix {
         }
     }
 
-    private fun wirelessRow(facts: FirmwareFacts, device: DeviceProfile): HardwareFeature {
+    private fun wirelessRow(facts: FirmwareFacts, device: DeviceProfile, unpack: UnpackResult): HardwareFeature {
         val imageDrivers = facts.wirelessDrivers
         val deviceChips = device.wifiChips
+        // HONESTY GATE: "the image ships no wireless drivers" is only evidence when the image was
+        // actually read. On an opaque payload (raw/vendor-encrypted blob, UBI/UBIFS rootfs) the
+        // missing module list is *absence of evidence* - calling the radio dead there is a false
+        // "do not flash" on what may be the vendor's own stock image.
+        if (!unpack.inspected) {
+            return HardwareFeature(
+                "Wi-Fi hardware",
+                "unknown - this image could not be unpacked" + if (imageDrivers.isEmpty()) "" else " (only ${imageDrivers.size} driver(s) visible)",
+                "device has ${deviceChips.ifEmpty { listOf("unknown wireless chipset") }.joinToString(", ")}",
+                FeatureVerdict.UNVERIFIED,
+                "The engine could not read inside this file (${unpack.opaqueReason() ?: "no readable rootfs"}), so it cannot " +
+                    "tell whether it ships drivers for ${deviceChips.firstOrNull() ?: "this router's radio"}. That is a limit of a " +
+                    "static phone-side check - it is NOT a hardware mismatch.",
+                "Unpack the image on a PC (binwalk / unsquashfs) to list its wireless modules, or use a build this app can read " +
+                    "(squashfs, tar.gz, uImage) and re-run the check.",
+            )
+        }
         if (deviceChips.isEmpty()) {
             return HardwareFeature(
                 "Wi-Fi hardware", "image drivers: ${imageDrivers.take(5).joinToString(", ").ifEmpty { "none found" }}",
@@ -415,7 +454,13 @@ object HardwareMatrix {
         }
     }
 
-    private fun usbRow(facts: FirmwareFacts, device: DeviceProfile): HardwareFeature = when {
+    private fun usbRow(facts: FirmwareFacts, device: DeviceProfile, unpack: UnpackResult): HardwareFeature = when {
+        !unpack.inspected -> HardwareFeature(
+            "USB / storage", "unknown - this image could not be unpacked", if (device.usb) "device has USB ports" else "device has no USB",
+            FeatureVerdict.UNVERIFIED,
+            "The image's contents could not be read, so USB support cannot be checked either way. This does not affect the " +
+                "verdict, but it is one more thing that is unverified rather than confirmed.",
+        )
         !facts.usbSupported -> HardwareFeature(
             "USB / storage", "image has no USB support", if (device.usb) "device has USB ports" else "device has no USB",
             FeatureVerdict.COMPATIBLE,
@@ -527,22 +572,39 @@ object HardwareMatrix {
         }
     }
 
-    private fun wholeFlashRow(identity: ImageIdentity): HardwareFeature {
-        val looksWholeFlash = identity.primary == ImageFormat.RAW && identity.totalSize > 2L * 1024 * 1024
-        return if (looksWholeFlash) {
-            HardwareFeature(
-                "Image scope", "whole-flash dump (${identity.totalSize / (1024 * 1024)} MB, no recognised container)",
-                "you are flashing a full flash image",
-                FeatureVerdict.PARTIAL,
-                "This looks like a *complete flash dump* (bootloader + partitions). Writing it will erase the bootloader " +
-                    "and calibration data of your router - that is exactly how routers become unrecoverable bricks.",
-                "Prefer a partition image, or understand that you are restoring a full backup to the *same* device it came from.",
-            )
-        } else {
-            HardwareFeature(
+    private fun wholeFlashRow(identity: ImageIdentity, device: DeviceProfile): HardwareFeature {
+        if (identity.primary != ImageFormat.RAW) {
+            return HardwareFeature(
                 "Image scope", "partition/firmware image (${identity.primary.label})", "recommended: partition image",
                 FeatureVerdict.COMPATIBLE,
                 "This image contains a firmware payload rather than a raw whole-flash dump.",
+            )
+        }
+        // A raw blob tells us almost nothing about its own scope - only its size is a clue, and the
+        // size of the device's flash is the one thing we do know. Previously any raw file under
+        // 2 MB was declared a "partition/firmware image", which is not something the bytes support.
+        val fileMb = identity.totalSize / (1024.0 * 1024.0)
+        val looksLikeFullFlash = device.flashMb > 0 && fileMb >= device.flashMb * 0.95 && fileMb <= device.flashMb * 1.05
+        return if (looksLikeFullFlash) {
+            HardwareFeature(
+                "Image scope", "whole-flash size (${String.format(java.util.Locale.US, "%.1f", fileMb)} MB, no recognised container)",
+                "device flash is ${device.flashMb} MB",
+                FeatureVerdict.PARTIAL,
+                "This blob is the exact size of your router's whole ${device.flashMb} MB flash and carries no recognised " +
+                    "firmware container, so it is very likely a *complete flash dump* (bootloader + partitions + radio " +
+                    "calibration data). Writing it erases the bootloader - that is exactly how routers become unrecoverable bricks.",
+                "Only restore a full dump to the exact device it came from, using that bootloader's recovery path. For an " +
+                    "upgrade, use a partition image instead.",
+            )
+        } else {
+            HardwareFeature(
+                "Image scope", "raw blob, ${String.format(java.util.Locale.US, "%.1f", fileMb)} MB, no recognised container",
+                "device flash is ${if (device.flashMb > 0) "${device.flashMb} MB" else "unknown"}",
+                FeatureVerdict.UNVERIFIED,
+                "The file contains no recognisable firmware container, so the engine cannot tell whether it is a partition " +
+                    "image, a whole-flash dump or not a firmware image at all (a checksum cannot tell you either).",
+                "Verify what the file is before treating it as an upgrade image: compare its name and size with the vendor's " +
+                    "download page for your exact model + revision, or unpack it on a PC.",
             )
         }
     }
@@ -602,6 +664,21 @@ object HardwareMatrix {
 
     private fun formatSupportRow(identity: ImageIdentity, unpack: UnpackResult): HardwareFeature {
         val unsupported = unpack.unsupported
+        // "coverage: 100% of this image" must never appear for an image nothing could be read from -
+        // that row is the first thing a user checks when deciding how much to trust the report.
+        if (!unpack.inspected) {
+            val reason = unpack.opaqueReason() ?: "no container, filesystem, archive or compression stream was recognised"
+            return HardwareFeature(
+                "Static analysis coverage", "nothing could be read inside this file (${identity.primary.label})",
+                "engine coverage: header bytes + size only",
+                FeatureVerdict.PARTIAL,
+                "The engine could not unpack anything from this image: $reason. Every check below is therefore based on the " +
+                    "file's size, its first bytes and its entropy - not on its contents - so unmatchable rows are reported as " +
+                    "'needs verification' instead of being guessed at.",
+                "Unpack it on a PC (binwalk / unsquashfs) or use a build with a container this app can read (squashfs, tar.gz, " +
+                    "uImage, TRX), then re-run the check for content-level evidence.",
+            )
+        }
         return if (unsupported.isEmpty()) {
             HardwareFeature(
                 "Static analysis coverage", "full: container + rootfs were readable", "engine coverage: 100% of this image",
@@ -627,31 +704,60 @@ object HardwareMatrix {
             score += when (r.verdict) {
                 FeatureVerdict.INCOMPATIBLE -> 45
                 FeatureVerdict.PARTIAL -> 8
-                FeatureVerdict.UNVERIFIED -> 12
+                // Unverified rows describe missing *evidence*, not risk. Weighting them heavily made
+                // an image nothing could be read from score 100/100 - which reads as "this will brick
+                // your router" when the truth is "we could not look inside".
+                FeatureVerdict.UNVERIFIED -> 6
                 FeatureVerdict.COMPATIBLE -> 0
                 FeatureVerdict.MISSING -> 0
             }
         }
+        // Without a single verified mismatch the score must stay in the "we don't know" band.
+        if (rows.none { it.verdict.isRed }) score = minOf(score, 55)
         return minOf(score, 100)
     }
 
-    fun verdict(rows: List<HardwareFeature>): RiskVerdict {
+    /**
+     * @param imageInspected false when nothing inside the image could be unpacked. That state is
+     *   reported as [RiskVerdict.CANNOT_VERIFY] (no evidence either way), never as a "hardware
+     *   mismatch" - a proven red row still wins, because that one *is* evidence.
+     */
+    fun verdict(rows: List<HardwareFeature>, imageInspected: Boolean = true): RiskVerdict {
         val red = rows.count { it.verdict.isRed }
         val amber = rows.count { it.verdict == FeatureVerdict.PARTIAL || it.verdict == FeatureVerdict.UNVERIFIED }
         return when {
             red > 0 -> RiskVerdict.DO_NOT_FLASH
-            amber > 4 -> RiskVerdict.NEEDS_MANUAL_REVIEW
+            !imageInspected && amber > 0 -> RiskVerdict.CANNOT_VERIFY
             amber > 0 -> RiskVerdict.NEEDS_MANUAL_REVIEW
             else -> RiskVerdict.SAFE_TO_FLASH_AFTER_BACKUP
         }
     }
 
-    fun nextSteps(rows: List<HardwareFeature>, device: DeviceProfile, emulation: EmulationResult?): List<String> {
+    fun nextSteps(
+        rows: List<HardwareFeature>,
+        device: DeviceProfile,
+        emulation: EmulationResult?,
+        unpack: UnpackResult? = null,
+    ): List<String> {
         val steps = ArrayList<String>()
         val red = rows.filter { it.verdict.isRed }
         if (red.isNotEmpty()) {
             steps.add("Do NOT flash this image: ${red.size} hardware mismatch(es) - ${red.joinToString("; ") { it.feature }}.")
             red.forEach { r -> r.mitigation?.let { steps.add("${r.feature}: $it") } }
+            return steps
+        }
+        if (unpack != null && !unpack.inspected) {
+            steps.add(
+                "Do not flash this file on this evidence: the engine could not read anything inside it, so none of the checks " +
+                    "in this report are evidence about your router either way (see the findings for the exact reason)."
+            )
+            steps.add(
+                "Confirm the file itself: download the firmware for ${device.display} again from the vendor's own support page " +
+                    "(or firmware-selector.openwrt.org for OpenWrt) and compare the file size and SHA-256 with this one."
+            )
+            steps.add("If it is the right file, open it on a PC (binwalk, unsquashfs, 7-Zip) and check it is not truncated, encrypted or vendor-wrapped.")
+            steps.add("Use a build this app can read end-to-end (squashfs / tar.gz / uImage / TRX) if you want content-level evidence before flashing.")
+            steps.add("If you still decide to install it: take a full flash backup first, and keep the recovery path ready - ${device.recovery}")
             return steps
         }
         steps.add("Take a full backup first: SSH into the router and dump every partition (or use the vendor's backup function).")

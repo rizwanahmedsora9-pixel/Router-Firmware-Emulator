@@ -25,7 +25,14 @@ security. Read this before trusting a green verdict.
 * **It cannot prove flash timing.** Some bricks come from write-time failures (bad erase-block
   handling, power loss). The matrix can flag scope and layout mistakes, not physical write errors.
 * **Vendor-signed/encrypted images stay opaque.** If the payload cannot be decrypted, FlashGuard
-  reports that instead of guessing, and the matrix will show unverified rows.
+  reports that instead of guessing, and the matrix will show unverified rows. Such an image gets the
+  **CANNOT VERIFY** verdict: the report never calls it "hardware incompatible", because a file the
+  app could not read tells us nothing about your router either way. (Your own stock image, a
+  truncated download and a file for a different vendor all look the same from the outside - compare
+  the file's size and SHA-256 with the vendor's download, or unpack it on a PC, before trusting it.)
+* **"Not present" needs a readable image.** Rows such as Wi-Fi drivers, USB support and vendor
+  signatures are only reported as facts when something inside the file could actually be read;
+  otherwise they say "could not check" and the reason why.
 * **Unknown devices are not guessed.** A profile you invent is only as accurate as its numbers.
 * **Amber is not "probably fine".** It means "a static test cannot answer this" - check it
   manually, as the row's guidance says.

@@ -52,8 +52,10 @@ object FirmwareLab {
         val features = HardwareMatrix.evaluate(identity, facts, unpack, emulation, device)
         val findings = Heuristics.findings(identity, facts, unpack)
         val score = HardwareMatrix.score(features)
-        val verdict = HardwareMatrix.verdict(features)
-        val nextSteps = HardwareMatrix.nextSteps(features, device, emulation)
+        // "Nothing could be read" must not be reported as a hardware mismatch: the rows already say
+        // "needs verification", and the verdict follows the same rule.
+        val verdict = HardwareMatrix.verdict(features, unpack.inspected)
+        val nextSteps = HardwareMatrix.nextSteps(features, device, emulation, unpack)
 
         val report = EngineReport(
             identity = identity,

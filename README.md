@@ -48,7 +48,10 @@ network use is the optional read-only check against your own router on the LAN.
 4. Read the result:
    * **green** = the checks that matter all passed,
    * **amber** = things a static test cannot prove (verify manually),
-   * **red** = **hardware-incompatible - do not flash this**.
+   * **red** = **hardware-incompatible - do not flash this**,
+   * *could not verify* = nothing inside the file could be unpacked (raw/vendor-encrypted blob),
+     so there is no evidence either way. That is reported as its own verdict, **not** as a hardware
+     mismatch - the next steps tell you how to find out what the file actually is.
 5. Tab **Emulator** → *Open the emulated login page* to click through the firmware's own UI.
 6. Tab **Live test** → test the router you already have (before/after flashing) - read-only.
 7. Tab **Report** → share or copy the full Markdown/JSON report.
@@ -92,6 +95,13 @@ The engine runs on a plain JVM, so the whole analysis pipeline is testable in CI
 * Static emulation reproduces the firmware's **own init/config logic**; it does not execute ARM/MIPS
   binaries and cannot touch real hardware. Anything that can only be answered by real silicon is
   reported as *unverified*, never as "works".
+* A red row needs **positive evidence**, never the absence of it. "This image ships no wireless
+  drivers" is only asserted for an image the engine actually unpacked; if nothing could be read, the
+  row becomes *needs verification* with the reason, and the verdict is *could not verify* - calling
+  an unreadable file a "hardware mismatch" (for example your own stock image) is a false alarm that
+  teaches people to ignore the red verdicts that matter. Genuine mismatches - wrong SoC, NAND image
+  on NOR, a file larger than the whole flash chip - stay red regardless, because their evidence is in
+  the bytes we do have.
 * Vendor-signed/encrypted images are reported as opaque instead of guessed at.
 * Unknown devices are reported as *needs verification* instead of being assumed compatible.
 * The app never flashes anything. It has no write path to a router: the live check is GET-only,

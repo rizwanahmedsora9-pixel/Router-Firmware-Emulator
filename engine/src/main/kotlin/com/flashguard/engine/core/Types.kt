@@ -229,6 +229,15 @@ data class EngineReport(
 enum class RiskVerdict(val display: String, val level: FindingLevel) {
     SAFE_TO_FLASH_AFTER_BACKUP("Looks flashable - take a full backup first", FindingLevel.OK),
     NEEDS_MANUAL_REVIEW("Needs manual review before flashing", FindingLevel.WARN),
+
+    /**
+     * No mismatch was *proven* - but the engine could not read inside the image at all, so it has
+     * no evidence either way. This is deliberately NOT [DO_NOT_FLASH]: calling an unreadable blob a
+     * "hardware mismatch" is a false accusation (the file may be the vendor's own stock image), and
+     * it is the fastest way to teach a user to ignore the red verdicts that matter.
+     */
+    CANNOT_VERIFY("Could not verify this image - nothing inside it could be unpacked", FindingLevel.WARN),
+
     DO_NOT_FLASH("DO NOT FLASH - hardware mismatch detected", FindingLevel.ERROR),
     UNKNOWN("Not enough information", FindingLevel.INFO),
 }

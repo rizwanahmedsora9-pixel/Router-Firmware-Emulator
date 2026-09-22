@@ -18,6 +18,22 @@ class UnpackResult(
     val unsupported: MutableList<String> = ArrayList(),
 ) {
     val usable: Boolean get() = importedFiles > 0
+
+    /**
+     * True only when the engine actually got *inside* the image (at least one object beyond the
+     * virtual root was materialised).
+     *
+     * Every hardware-matrix row that reasons about the image's *content* - "ships no wireless
+     * drivers", "has no USB support", "is not signed", "coverage: 100%" - is only evidence when
+     * this is true. On an opaque payload (raw blob, vendor-encrypted file, UBI/UBIFS rootfs) the
+     * absence of a module name is *absence of evidence*, and the honest verdict is "could not
+     * check", never "not present".
+     */
+    val inspected: Boolean get() = importedFiles > 0 && vfs.fileCount > 1
+
+    /** One line explaining why nothing could be read - null when the image was readable. */
+    fun opaqueReason(): String? = if (inspected) null
+    else unsupported.firstOrNull() ?: notes.lastOrNull { it.startsWith("Nothing extractable") }
 }
 
 /**
@@ -33,7 +49,12 @@ class FirmwareUnpacker(
     private val notes = ArrayList<String>()
     private val unsupported = ArrayList<String>()
 
-    private class Job(val data: ByteArray, val origin: String, val depth: Int)
+    /**
+     * [probe] marks a blob found by the deep scan (a guess at an offset inside an unrecognised
+     * header). A probe that turns out not to be a valid stream is a dead end, not a limitation of
+     * the image, so its failures are reported as notes instead of "unsupported" entries.
+     */
+    private class Job(val data: ByteArray, val origin: String, val depth: Int, val probe: Boolean = false)
 
     fun unpack(): UnpackResult {
         var imported = 0
@@ -83,6 +104,9 @@ class FirmwareUnpacker(
 
         if (imported == 0 && vfs.fileCount <= 1) {
             notes.add("Nothing extractable: the image is a flat blob (bootloader/whole-flash dump) or uses an unsupported container")
+            unsupported.add(
+                "Nothing inside this image could be unpacked: no recognised container, filesystem, archive or compression stream was found"
+            )
         }
         notes.addAll(vfs.fileCount.let { listOf("Virtual rootfs: ${vfs.humanSummary()}") })
         if (vfs.truncated) unsupported.add("File count limit hit - the rootfs listing is partial")
@@ -171,7 +195,8 @@ class FirmwareUnpacker(
         val kind = Compression.sniff(data)
         if (kind != null) {
             if (!kind.decodable) {
-                unsupported.add("${kind.label} container cannot be decompressed on-device (${job.origin})")
+                if (job.probe) notes.add("Deep-scan candidate ${job.origin} is a ${kind.label} this build cannot decompress - ignored")
+                else unsupported.add("${kind.label} container cannot be decompressed on-device (${job.origin})")
                 return 0
             }
             val decoded = Compression.decode(data)
@@ -180,21 +205,105 @@ class FirmwareUnpacker(
                 queue.add(Job(decoded.bytes, "${job.origin} > ${kind.label}", job.depth + 1))
                 return 0
             }
-            unsupported.add("${kind.label} stream could not be decoded (${job.origin})")
+            // A mis-detected magic inside binary data is not a property of the firmware.
+            if (job.probe) notes.add("Deep-scan candidate ${job.origin} was not a valid ${kind.label} stream - ignored")
+            else unsupported.add("${kind.label} stream could not be decoded (${job.origin})")
             return 0
         }
 
-        // 5) last resort: byte scan for an embedded filesystem inside a vendor header
-        for (magic in listOf("hsqs", "070701")) {
-            val idx = Bin.indexOfAscii(data, magic, 64)
-            if (idx > 0) {
-                val chunk = data.copyOfRange(idx, data.size)
-                notes.add("Found embedded $magic payload at 0x${idx.toString(16)} (${job.origin})")
-                queue.add(Job(chunk, "${job.origin} embedded @0x${idx.toString(16)}", job.depth + 1))
-                return 0
-            }
+        // 5) last resort: a vendor header the identifier could not parse, possibly followed by a
+        //    payload we *can* read. Sweep the blob for a known payload and hand it back to the
+        //    pipeline - this is what opens "Raw/unknown binary" vendor images whose header is
+        //    proprietary but whose kernel/rootfs is a plain gzip/lzma/squashfs/tar stream.
+        val hits = deepScan(data, job, queue)
+        if (hits == 0) {
+            notes.add(
+                "Nothing recognisable in this blob (${job.origin}): no container, filesystem, archive or compression stream - " +
+                    "the payload is likely encrypted, proprietary, or not a firmware image at all"
+            )
         }
         return 0
+    }
+
+    /**
+     * Sweeps [data] for payloads at *any* offset (not just the header the parser knows about).
+     * Only streams we can actually decode are queued; a candidate that fails to decode is recorded
+     * as a note, never as an "unsupported feature" of the image, so deep-scan noise cannot leak
+     * into the report as a limitation of the file.
+     */
+    private fun deepScan(data: ByteArray, job: Job, queue: ArrayDeque<Job>): Int {
+        if (data.size < 256) return 0
+        val limit = minOf(data.size, DEEP_SCAN_BYTES)
+        var hits = 0
+
+        fun queueHit(at: Int, label: String) {
+            notes.add("Deep scan: $label found at 0x${at.toString(16)} behind an unrecognised header (${job.origin})")
+            queue.add(Job(data.copyOfRange(at, data.size), "${job.origin} $label @0x${at.toString(16)}", job.depth + 1, probe = true))
+            hits++
+        }
+
+        for (m in DEEP_MAGICS) {
+            if (hits >= MAX_DEEP_HITS) break
+            var from = 16
+            while (hits < MAX_DEEP_HITS) {
+                val idx = Bin.indexOf(data, m.bytes, from)
+                if (idx < 0 || idx >= limit) break
+                from = idx + 1
+                if (idx < 16) continue
+                // SquashFS only counts when the superblock version really is 4, otherwise the four
+                // magic bytes were a coincidence in binary data.
+                if (m.format == ImageFormat.SQUASHFS && (idx + 30 > data.size || Bin.u16le(data, idx + 28) != 4)) continue
+                // gzip needs the method byte and a sane flag byte: the 2-byte magic alone turns up
+                // in random data far too often (1 in 65536 bytes).
+                if (m.format == ImageFormat.GZIP &&
+                    (idx + 4 > data.size || Bin.u8(data, idx + 2) != 0x08 || (Bin.u8(data, idx + 3) and 0xE0) != 0)
+                ) continue
+                if (m.format == ImageFormat.BZIP2 && (idx + 4 > data.size || Bin.u8(data, idx + 3) !in '1'.code..'9'.code)) continue
+                queueHit(idx, m.label)
+            }
+        }
+
+        // A tar archive whose 512-byte header starts after a vendor header: "ustar" sits at
+        // start + 257. Validate the size field so random "ustar" strings cannot match.
+        var from = 0
+        while (hits < MAX_DEEP_HITS) {
+            val idx = Bin.indexOfAscii(data, "ustar", from)
+            if (idx < 0 || idx >= limit) break
+            from = idx + 1
+            val start = idx - 257
+            if (start < 16) continue
+            val sizeField = Bin.ascii(data, start + 124, 11).trim { it == ' ' || it == '\u0000' }
+            if (sizeField.isEmpty() || sizeField.any { it < '0' || it > '7' }) continue
+            queueHit(start, "tar archive")
+        }
+        return hits
+    }
+
+    /**
+     * Payloads the deep scan looks for anywhere in a blob, most-readable first. Filesystems come
+     * before compression streams because a squashfs/cpio find *is* the rootfs, while a compression
+     * find only moves the search one layer deeper.
+     */
+    private val DEEP_MAGICS = listOf(
+        DeepMagic("hsqs".toByteArray(Charsets.ISO_8859_1), ImageFormat.SQUASHFS, "SquashFS (little-endian)"),
+        DeepMagic("sqsh".toByteArray(Charsets.ISO_8859_1), ImageFormat.SQUASHFS, "SquashFS (big-endian)"),
+        DeepMagic("070701".toByteArray(Charsets.ISO_8859_1), ImageFormat.CPIO, "cpio newc archive"),
+        DeepMagic(byteArrayOf(0x1F, 0x8B.toByte()), ImageFormat.GZIP, "gzip stream"),
+        DeepMagic(byteArrayOf(0xFD.toByte(), 0x37, 0x7A, 0x58, 0x5A, 0x00), ImageFormat.XZ, "xz stream"),
+        DeepMagic(byteArrayOf(0x42, 0x5A, 0x68), ImageFormat.BZIP2, "bzip2 stream"),
+        DeepMagic(byteArrayOf(0x28, 0xB5.toByte(), 0x2F, 0xFD.toByte()), ImageFormat.ZSTD, "zstd stream"),
+        DeepMagic(byteArrayOf(0x04, 0x22, 0x4D, 0x18), ImageFormat.LZ4, "lz4 stream"),
+        DeepMagic(byteArrayOf(0x89.toByte(), 0x4C, 0x5A, 0x4F), ImageFormat.LZO, "lzo stream"),
+    )
+
+    private class DeepMagic(val bytes: ByteArray, val format: ImageFormat, val label: String)
+
+    private companion object {
+        /** How much of a blob the deep scan sweeps (phone-friendly: no 4 GB dumps). */
+        const val DEEP_SCAN_BYTES = 64 * 1024 * 1024
+
+        /** At most this many payload candidates per blob, so one noisy file cannot flood the queue. */
+        const val MAX_DEEP_HITS = 4
     }
 
     private fun trxSegments(data: ByteArray): List<Int> {

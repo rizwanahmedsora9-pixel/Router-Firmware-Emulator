@@ -262,7 +262,10 @@ class MainActivity : AppCompatActivity() {
         b.textVerdictDetail.text = buildString {
             append("${red} hardware-incompatible feature(s), ")
             append("${session.report.features.size} checks, ")
-            append("${session.unpack.vfs.fileCount} objects extracted")
+            // importedFiles, not vfs.fileCount: the virtual root always exists, so fileCount would
+            // claim "1 objects extracted" even when nothing at all could be pulled out of the image.
+            append("${session.unpack.importedFiles} objects extracted")
+            if (session.unpack.importedFiles == 0) append(" (this image could not be unpacked)")
             if (LabHolder.usingDemoImage) append("  •  built-in demo image")
         }
         b.textIdentity.text = buildString {

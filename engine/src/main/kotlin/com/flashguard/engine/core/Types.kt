@@ -266,7 +266,9 @@ data class DeviceProfile(
 }
 
 enum class CpuFamily(val display: String, val kernelArchKeywords: List<String>) {
-    MIPS_BE("MIPS big-endian (mips/ar71xx-family)", listOf("mips", "mipseb", "ar71xx", "ath79", "ar9344", "qca")),
+    // Bare "mips" is deliberately NOT a keyword: it is endian-ambiguous (uImage arch code 5
+    // covers both mips and mipsel), so it yields a PARTIAL row rather than a green one.
+    MIPS_BE("MIPS big-endian (mips/ar71xx-family)", listOf("mipseb", "ar71xx", "ath79", "ar9344", "qca")),
     MIPSEL("MIPS little-endian (mipsel/ramips)", listOf("mipsel", "ramips", "mt7620", "mt7621", "rt305x", "mt76x8")),
     ARM_LE("ARM 32-bit (armv7)", listOf("arm", "armv7", "armhf", "cortex-a7", "cortex-a9")),
     AARCH64("ARM 64-bit (arm64/aarch64)", listOf("aarch64", "arm64", "cortex-a53", "cortex-a55")),

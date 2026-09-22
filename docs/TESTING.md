@@ -8,9 +8,12 @@ This runs `com.flashguard.engine.SelfTestKt`, which builds synthetic firmware im
 drives the whole pipeline against them. It exits non-zero when anything fails, so it is the CI gate
 for analysis logic. Covered:
 
-* identification: gzip, tar, TRX + vendor mining, U-Boot uImage with arch hints, high-entropy
-  RAW/encrypted blob, UBI;
-* containers: tar and cpio fixtures built byte-by-byte, gzip round-trip;
+* identification: gzip, tar, TRX + vendor mining, U-Boot uImage in BOTH the real mkimage
+  `image_header_t` layout (type@5/os@6/arch@7/name@28) and the legacy layout, with arch hints,
+  high-entropy RAW/encrypted blob, UBI;
+* containers: tar and cpio fixtures built byte-by-byte, a real-layout SquashFS 4.0 fixture
+  (128-byte superblock, zlib data blocks, 6-byte directory entries - the mksquashfs/kernel
+  format) that must list the full tree and read file content back, gzip round-trip;
 * sandbox: variables/if/while scripting, service and port recording, hardware-touch detection
   (`mtd`), unknown-command accounting, `rm -rf /` confinement;
 * full pipeline: an OpenWrt-like image on a matching device (must reach init and the web UI with

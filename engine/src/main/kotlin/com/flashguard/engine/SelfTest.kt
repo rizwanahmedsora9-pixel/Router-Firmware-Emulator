@@ -1,6 +1,7 @@
 package com.flashguard.engine
 
 import com.flashguard.engine.compression.Compression
+import com.flashguard.engine.container.SquashFsReader
 import com.flashguard.engine.core.BootStageNames
 import com.flashguard.engine.core.DeviceProfile
 import com.flashguard.engine.core.FeatureVerdict
@@ -219,6 +220,42 @@ fun main(args: Array<String>) {
         val id = FirmwareIdentifier.identify(uimage, "openwrt-uimage.bin")
         r.expect(id.primary == ImageFormat.UBOOT_LEGACY, "expected uImage, got ${id.primary}")
         r.expect(id.archHints.any { it.contains("mips") }, "expected mips arch hint, got ${id.archHints}")
+    }
+    r.check("identifies a real mkimage image_header_t uImage (type@5 os@6 arch@7 name@28)") {
+        val uimage = buildRealUImage(gzTar)
+        val id = FirmwareIdentifier.identify(uimage, "openwrt-10.03.1-rc1-ar71xx-generic.bin")
+        r.expect(id.primary == ImageFormat.UBOOT_LEGACY, "expected uImage, got ${id.primary}")
+        r.expect(id.archHints.any { it.contains("mips") }, "expected mips arch hint, got ${id.archHints}")
+        r.expect(
+            id.evidence.any { it.contains("MIPS OpenWrt Linux-4.14.241") && it.contains("Linux/MIPS/kernel") },
+            "uImage evidence garbled: " + id.evidence.filter { it.contains("uImage") }.joinToString(" | "),
+        )
+    }
+    r.check("parses a real-layout SquashFS 4.0 image (128B superblock, kernel dir-entry format)") {
+        val sqfs = buildSquashFs(
+            mapOf(
+                "/etc/passwd" to "root:x:0:0:root:/root:/bin/sh\n".toByteArray(),
+                "/etc/init.d/uhttpd" to "#!/bin/sh /etc/rc.common\nSTART=50\nstart() {\n  uhttpd -h /www -p 80\n}\n".toByteArray(),
+                "/etc/rc.d/S50uhttpd" to "#!/bin/sh\n/etc/init.d/uhttpd start\n".toByteArray(),
+                "/www/login.html" to "<html><head><title>Squash Test</title></head><body><form>login</form></body></html>".toByteArray(),
+            ),
+        )
+        val reader = SquashFsReader(sqfs)
+        r.expect(reader.parse(), "superblock parse failed")
+        val entries = reader.list()
+        r.expect(entries.size >= 8, "expected the full tree, got ${entries.size} entries")
+        val login = entries.firstOrNull { !it.isDir && it.path.endsWith("login.html") }
+        val content = login?.let { reader.readFile(it.inode) }
+        r.expect(content != null && String(content).contains("login"), "file content read failed")
+    }
+    r.check("full pipeline boots a real mkimage-layout uImage wrapping a rootfs") {
+        // uImage(kernel=gzip(tar rootfs)) the way ar71xx/mvebu OpenWrt images actually ship.
+        val uimage = buildRealUImage(gzTar)
+        val device = DeviceDb.byId("glinet-gl-mt1300")!!
+        val session = FirmwareLab.analyze(uimage, "openwrt-real-uimage.bin", device)
+        r.expect(session.identity.primary == ImageFormat.UBOOT_LEGACY, "format ${session.identity.primary}")
+        r.expect(session.unpack.vfs.fileCount > 20, "rootfs too small: ${session.unpack.vfs.fileCount}")
+        r.expect(session.emulation.reachedWebUi(), "did not reach web UI through a real-layout uImage")
     }
     r.check("flags an opaque high-entropy blob as RAW/encrypted") {
         val random = ByteArray(64 * 1024) { ((it * 7919) % 256).toByte() }
@@ -500,6 +537,187 @@ private fun buildUImage(payload: ByteArray): ByteArray {
     val name = "MIPS OpenWrt Linux-4.14.241".toByteArray()
     System.arraycopy(name, 0, header, 32, minOf(name.size, 32))
     return header + payload
+}
+
+/** Real U-Boot image_header_t as produced by mkimage: version@4 type@5 os@6 arch@7 time@8 size@12 load@16 ep@20 dcrc@24 name@28. */
+private fun buildRealUImage(payload: ByteArray): ByteArray {
+    val header = ByteArray(64)
+    writeU32be(header, 0, 0x27051956)
+    header[4] = 1  // version
+    header[5] = 2  // type = kernel
+    header[6] = 5  // os = Linux
+    header[7] = 5  // arch = MIPS
+    // time@8 and dcrc@24 left zero
+    writeU32be(header, 12, payload.size)
+    writeU32be(header, 16, 0x80000000.toInt())
+    writeU32be(header, 20, 0x80000000.toInt())
+    val name = "MIPS OpenWrt Linux-4.14.241".toByteArray()
+    System.arraycopy(name, 0, header, 28, minOf(name.size, 32))
+    return header + payload
+}
+
+/**
+ * Minimal SquashFS 4.0 writer producing a REAL on-disk image: 128-byte superblock
+ * (directory_table_start @80, ...), zlib data blocks, basic inodes, uncompressed metadata
+ * blocks (bit-15 flag) and 6-byte directory entries sized 6 + round4(len) - the layout
+ * mksquashfs and the Linux kernel use. Pins the reader to the real format.
+ */
+private fun buildSquashFs(files: Map<String, ByteArray>): ByteArray {
+    fun parentOf(p: String): String {
+        val parts = p.trim('/').split('/')
+        return if (parts.size == 1) "/" else "/" + parts.dropLast(1).joinToString("/")
+    }
+    class B {
+        val b = java.io.ByteArrayOutputStream()
+        fun u16(v: Int) { b.write(v and 0xFF); b.write((v shr 8) and 0xFF) }
+        fun u32(v: Int) { for (i in 0..3) b.write((v shr (8 * i)) and 0xFF) }
+        fun u64(v: Long) { for (i in 0..7) b.write(((v shr (8 * i)) and 0xFF).toInt()) }
+        fun bytes(arr: ByteArray) { b.write(arr) }
+        fun len() = b.size()
+        fun out() = b.toByteArray()
+        fun pad4() { val m = b.size() % 4; if (m != 0) for (i in 0 until 4 - m) b.write(0) }
+    }
+
+    // directories
+    val dirs = linkedSetOf("/")
+    for (p in files.keys) {
+        val parts = p.trim('/').split('/')
+        for (i in 0 until parts.size - 1) dirs.add("/" + parts.take(i + 1).joinToString("/"))
+    }
+    // inode numbers: root first, then dirs, then files
+    val num = LinkedHashMap<String, Int>()
+    num["/"] = 1
+    var nextNo = 1
+    for (d in dirs.sorted().filter { it != "/" }) { nextNo++; num[d] = nextNo }
+    for (f in files.keys.sorted()) { nextNo++; num[f] = nextNo }
+    val nInodes = nextNo
+    fun childrenOf(d: String): List<String> =
+        (dirs.sorted().filter { it != "/" && parentOf(it) == d }) +
+            (files.keys.sorted().filter { parentOf(it) == d })
+
+    // data blocks (zlib); start_block is an ABSOLUTE image offset (after the 128B superblock)
+    val BLOCK = 4096
+    val data = java.io.ByteArrayOutputStream()
+    val fileBlocks = HashMap<String, IntArray>()
+    fun zlibChunk(chunk: ByteArray): ByteArray {
+        val def = java.util.zip.Deflater(6)
+        def.setInput(chunk)
+        def.finish()
+        val out = java.io.ByteArrayOutputStream(chunk.size + 64)
+        val buf = ByteArray(8192)
+        while (!def.finished()) out.write(buf, 0, def.deflate(buf))
+        return out.toByteArray()
+    }
+    for (f in files.keys.sorted()) {
+        val c = files.getValue(f)
+        val counts = ArrayList<Int>()
+        val start = 128 + data.size()
+        var i = 0
+        while (i < c.size) {
+            val chunk = c.copyOfRange(i, minOf(c.size, i + BLOCK))
+            val comp = zlibChunk(chunk)
+            counts.add(if (comp.size < chunk.size) comp.size else (0x01000000 or chunk.size))
+            data.write(if (comp.size < chunk.size) comp else chunk)
+            i += BLOCK
+        }
+        fileBlocks[f] = intArrayOf(start) + counts.toIntArray()
+    }
+
+    // inode table: single uncompressed metadata block
+    val MTIME = 1700000000
+    val itb = B()
+    val ioff = HashMap<String, Int>()
+    fun dirInode(path: String) {
+        itb.pad4(); ioff[path] = itb.len()
+        val nch = childrenOf(path).size
+        itb.u16(1)                    // type = basic dir
+        itb.u16(0x755)
+        itb.u16(0); itb.u16(0)
+        itb.u32(MTIME)
+        itb.u32(num.getValue(path))
+        itb.u32(0)                    // dir start block (single dir-table block)
+        itb.u32(0)
+        itb.u16((nch - 1).coerceAtLeast(0))  // dir_size = entry count - 1
+        itb.u16(0)                    // dir_offset - patched below
+        itb.u32(0)
+    }
+    fun fileInode(path: String) {
+        itb.pad4(); ioff[path] = itb.len()
+        val (start, sizes) = fileBlocks.getValue(path).let { it[0] to it.copyOfRange(1, it.size) }
+        itb.u16(2)                    // type = basic file
+        itb.u16(0x644)
+        itb.u16(0); itb.u16(0)
+        itb.u32(MTIME)
+        itb.u32(num.getValue(path))
+        itb.u32(start)
+        itb.u32(-1)                   // no fragment
+        itb.u32(0)
+        itb.u32(files.getValue(path).size)
+        for (s in sizes) itb.u32(s)
+    }
+    dirInode("/")
+    for (d in dirs.sorted().filter { it != "/" }) dirInode(d)
+    for (f in files.keys.sorted()) fileInode(f)
+
+    // directory table: single uncompressed metadata block, real 6-byte entries
+    val dt = B()
+    val dtoff = HashMap<String, Int>()
+    for (path in listOf("/") + dirs.sorted().filter { it != "/" }) {
+        dt.pad4(); dtoff[path] = dt.len()
+        val ch = childrenOf(path)
+        dt.u32((ch.size - 1).coerceAtLeast(0))  // count = entries - 1
+        dt.u32(0)                    // start block of inode table
+        dt.u32(num.getValue(path))   // base inode
+        var prev = num.getValue(path)
+        for (c in ch) {
+            val name = c.substringAfterLast('/')
+            dt.u16(ioff.getValue(c))
+            dt.u16(num.getValue(c) - prev)
+            dt.u16(name.length - 1)
+            dt.bytes(name.toByteArray())
+            for (i in 0 until ((name.length + 3) and -4) - name.length) dt.b.write(0)
+            prev = num.getValue(c)
+        }
+    }
+
+    // patch dir offsets into the inode table
+    val itArr = itb.out()
+    for (d in dirs) {
+        val off = ioff.getValue(d) + 26
+        itArr[off] = (dtoff.getValue(d) and 0xFF).toByte()
+        itArr[off + 1] = ((dtoff.getValue(d) shr 8) and 0xFF).toByte()
+    }
+
+    // assemble: superblock(128) + data + inode meta block + dir meta block
+    val inodeTableStart = 128 + data.size()
+    val dirTableStart = inodeTableStart + 2 + itArr.size
+    val bytesUsed = dirTableStart + 2 + dt.len()
+    val sb = B()
+    sb.bytes("hsqs".toByteArray())
+    sb.u32(nInodes)
+    sb.u32(MTIME)
+    sb.u32(BLOCK)
+    sb.u32(0)                 // fragment count
+    sb.u16(1)                 // compression: gzip/zlib
+    sb.u16(12)                // block log
+    sb.u16(1)                 // flags
+    sb.u16(0)                 // id table size
+    sb.u16(4); sb.u16(0)      // version
+    sb.u64(0)                 // root inode (block 0, offset 0)
+    sb.u64(bytesUsed.toLong())
+    sb.u64(0); sb.u64(0)      // id table
+    sb.u64(inodeTableStart.toLong()); sb.u64(itArr.size.toLong())
+    sb.u64(dirTableStart.toLong()); sb.u64(dt.len().toLong())
+    sb.u64(0); sb.u64(0)      // fragment table
+    sb.u64(0); sb.u64(0)      // lookup table
+    val img = B()
+    img.bytes(sb.out())
+    img.bytes(data.toByteArray())
+    img.u16(0x8000 or itArr.size)   // bit15 = uncompressed metadata block
+    img.bytes(itArr)
+    img.u16(0x8000 or dt.len())
+    img.bytes(dt.out())
+    return img.out()
 }
 
 /** cpio newc archive. */

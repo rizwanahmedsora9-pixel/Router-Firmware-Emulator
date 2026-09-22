@@ -263,6 +263,49 @@ fun main(args: Array<String>) {
         r.expect(id.primary == ImageFormat.RAW, "expected RAW, got ${id.primary}")
         r.expect(id.evidence.any { it.contains("entropy", true) }, "expected entropy evidence")
     }
+
+    // --------------------------------------------------------- opaque images: report honesty
+    r.check("opaque raw dump on a WR720N v2: no invented evidence, no false red, manual-review verdict") {
+        // A ~1.49 MB blob no container matches - like a flash dump or encrypted vendor image:
+        // a deterministic random-looking head plus zero padding (low entropy, like real dumps).
+        val blob = ByteArray(1_562_374)
+        for (i in 0 until 64 * 1024) blob[i] = ((i * 31) % 251).toByte()
+        val v2 = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        val session = FirmwareLab.analyze(blob, "mystery-dump.bin", v2)
+        r.expect(session.identity.primary == ImageFormat.RAW, "expected RAW, got ${session.identity.primary}")
+        r.expect(session.unpack.vfs.fileCount <= 5, "nothing should be extractable from the blob")
+        val wifi = session.report.features.first { it.feature.contains("Wi-Fi") }
+        r.expect(wifi.verdict == FeatureVerdict.UNVERIFIED, "unreadable image must not claim 'no wireless drivers': ${wifi.why}")
+        val flashType = session.report.features.first { it.feature.startsWith("Flash type") }
+        r.expect(flashType.verdict == FeatureVerdict.UNVERIFIED, "raw blob must not claim flash-layout consistency: ${flashType.why}")
+        val scope = session.report.features.first { it.feature == "Image scope" }
+        r.expect(scope.verdict != FeatureVerdict.COMPATIBLE, "unrecognised flat blob must not pass as a clean partition image: ${scope.why}")
+        val coverage = session.report.features.first { it.feature.startsWith("Static analysis coverage") }
+        r.expect(coverage.verdict != FeatureVerdict.COMPATIBLE, "coverage must not claim full/100% when nothing was extracted: ${coverage.why}")
+        r.expect(session.report.redFlags().isEmpty(), "false reds on an unreadable image: " + session.report.redFlags().joinToString { it.feature })
+        r.expect(
+            session.report.verdict == com.flashguard.engine.core.RiskVerdict.NEEDS_MANUAL_REVIEW,
+            "expected NEEDS_MANUAL_REVIEW, got ${session.report.verdict}",
+        )
+    }
+
+    r.check("a READABLE rootfs with no wireless modules is still RED for Wi-Fi on the WR720N v2") {
+        val img = buildTar(
+            listOf(
+                "etc/banner" to "TinyWrt 1.0 custom build\n".toByteArray(),
+                "etc/init.d/boot" to "#!/bin/sh\nstart() { echo boot }\n".toByteArray(),
+                "www/login.html" to "<html><body><form>login</form></body></html>".toByteArray(),
+                "bin/busybox" to "binary-stub".toByteArray(),
+            ),
+            dirs = listOf("etc", "etc/init.d", "www", "bin"),
+        )
+        val v2 = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        val session = FirmwareLab.analyze(img, "custom-nowireless.tar", v2)
+        r.expect(session.unpack.vfs.fileCount > 5, "fixture rootfs should be readable, got ${session.unpack.vfs.fileCount}")
+        val wifi = session.report.features.first { it.feature.contains("Wi-Fi") }
+        r.expect(wifi.verdict == FeatureVerdict.INCOMPATIBLE, "readable rootfs without wireless modules must stay RED: ${wifi.why}")
+        r.expect(session.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH, got ${session.report.verdict}")
+    }
     r.check("detects UBI/NAND images and refuses to pretend otherwise") {
         val ubi = ByteArray(2048)
         System.arraycopy("UBI#".toByteArray(), 0, ubi, 0, 4)

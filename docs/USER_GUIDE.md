@@ -52,7 +52,8 @@ Rows worth understanding:
   uImage/FIT/sysupgrade images. Red when they disagree.
 * **Vendor signature** - locked devices refuse unsigned images. Red.
 * **Wi-Fi** - drivers present in the image for chips your device does not have: the radio will not
-  come up after flashing. Red.
+  come up after flashing. Red. If the image could not be unpacked at all, the row shows *needs
+  verification* instead - an unreadable image is not evidence of missing drivers.
 * **Whole-flash dump** - a full flash image includes the bootloader; writing it is the classic
   unrecoverable brick. Red.
 * **Static boot test** - how far the sandbox got: header, kernel, rootfs, init scripts, services,

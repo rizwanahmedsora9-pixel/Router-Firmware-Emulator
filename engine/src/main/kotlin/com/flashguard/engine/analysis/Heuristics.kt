@@ -269,7 +269,7 @@ object Heuristics {
                 )
             )
         }
-        if (vfs.fileCount > 0) {
+        if (vfs.fileCount > 0 && unpack.importedFiles > 0) {
             out.add(
                 Finding(
                     "rootfs", "Rootfs: ${vfs.humanSummary()}",

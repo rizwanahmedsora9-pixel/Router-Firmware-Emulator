@@ -36,17 +36,27 @@ object HardwareMatrix {
         rows += flashTypeRow(identity, facts, device)
         rows += bootloaderRow(identity, device)
         rows += signatureRow(identity, device)
-        rows += wirelessRow(facts, device)
-        rows += usbRow(facts, device)
+        rows += wirelessRow(facts, unpack, device)
+        rows += usbRow(facts, unpack, device)
         rows += ramRow(facts, device)
         rows += deviceTreeRow(identity, device)
         rows += flashMethodRow(identity, unpack, device)
-        rows += wholeFlashRow(identity)
+        rows += wholeFlashRow(identity, unpack)
         rows += bootEvidenceRow(emulation, unpack)
         rows += recoveryRow(device)
         rows += formatSupportRow(identity, unpack)
         return rows
     }
+
+    /**
+     * Below this many extracted objects there is no rootfs to speak of, so "X was not found in the
+     * image" claims would be fabricated evidence (absence of evidence is not evidence of absence).
+     * Kept in sync with the boot-evidence row's readability threshold.
+     */
+    private const val MIN_ENTRIES_FOR_READABLE_ROOTFS = 5
+
+    private fun rootfsReadable(unpack: UnpackResult?): Boolean =
+        unpack != null && unpack.vfs.fileCount > MIN_ENTRIES_FOR_READABLE_ROOTFS
 
     // ------------------------------------------------------------------ individual rules
 
@@ -261,11 +271,13 @@ object HardwareMatrix {
     }
 
     private fun flashTypeRow(identity: ImageIdentity, facts: FirmwareFacts, device: DeviceProfile): HardwareFeature {
+        val norIndicators = listOf(ImageFormat.SQUASHFS, ImageFormat.TRX, ImageFormat.NETGEAR_CHK, ImageFormat.TPLINK_BIN)
         val imageIsNand = identity.primary == ImageFormat.UBI || identity.primary == ImageFormat.UBIFS ||
             identity.layers.flatMap { it.flattenTree() }.any { it.format == ImageFormat.UBI || it.format == ImageFormat.UBIFS } ||
             facts.target?.contains("nand", true) == true
-        val imageIsNor = !imageIsNand && (identity.primary == ImageFormat.SQUASHFS || identity.primary == ImageFormat.TRX ||
-            identity.primary == ImageFormat.NETGEAR_CHK || identity.primary == ImageFormat.TPLINK_BIN)
+        val imageIsNor = !imageIsNand && (identity.primary in norIndicators ||
+            identity.layers.flatMap { it.flattenTree() }.any { it.format in norIndicators } ||
+            facts.target?.contains("squashfs", true) == true)
         val deviceNand = device.flashType.equals("NAND", true)
         val deviceNor = device.flashType.equals("NOR", true)
         return when {
@@ -297,10 +309,24 @@ object HardwareMatrix {
                 FeatureVerdict.COMPATIBLE,
                 "This device boots from removable media, so a bad image cannot brick it - the safest possible test bench.",
             )
-            else -> HardwareFeature(
-                "Flash type (NOR vs NAND)", "image type: ${identity.primary.label}", "device has ${device.flashType} flash",
+            imageIsNand && deviceNand -> HardwareFeature(
+                "Flash type (NOR vs NAND)", "image is a NAND/UBI image", "device has ${device.flashType} flash",
+                FeatureVerdict.COMPATIBLE,
+                "The image is built for NAND (UBI volumes) and the device boots from NAND - the layouts match.",
+            )
+            imageIsNor && deviceNor -> HardwareFeature(
+                "Flash type (NOR vs NAND)", "image carries a NOR-style payload (${identity.primary.label})", "device has ${device.flashType} flash",
                 FeatureVerdict.COMPATIBLE,
                 "The image's flash layout is consistent with this device's flash type.",
+            )
+            else -> HardwareFeature(
+                "Flash type (NOR vs NAND)", "image type: ${identity.primary.label} (no flash-layout evidence)",
+                "device has ${device.flashType} flash",
+                FeatureVerdict.UNVERIFIED,
+                "The image does not carry enough structure to tell whether it was laid out for NOR or NAND flash. " +
+                    "Flashing an image laid out for the wrong kind of flash leaves the bootloader without a kernel, " +
+                    "so this needs manual confirmation.",
+                "Only flash images published for ${device.display}, and check the model's wiki page for its flash type.",
             )
         }
     }
@@ -369,7 +395,7 @@ object HardwareMatrix {
         }
     }
 
-    private fun wirelessRow(facts: FirmwareFacts, device: DeviceProfile): HardwareFeature {
+    private fun wirelessRow(facts: FirmwareFacts, unpack: UnpackResult?, device: DeviceProfile): HardwareFeature {
         val imageDrivers = facts.wirelessDrivers
         val deviceChips = device.wifiChips
         if (deviceChips.isEmpty()) {
@@ -392,19 +418,31 @@ object HardwareMatrix {
                     deviceTokens.any { it.startsWith("bcm") || it.startsWith("broadcom") }) ||
                 (d.contains("rtl") && deviceTokens.contains("rtl"))
         }
+        // Honesty rule: "no wireless modules found" is only EVIDENCE when a rootfs was actually
+        // read. An opaque/unreadable image (raw dump, encrypted payload, unmountable filesystem)
+        // says nothing about its drivers - flagging that red would tell users their own stock
+        // images are hardware-incompatible on pure speculation.
+        val readable = rootfsReadable(unpack)
         return when {
-            imageDrivers.isEmpty() -> HardwareFeature(
+            imageDrivers.isEmpty() && readable -> HardwareFeature(
                 "Wi-Fi hardware", "image ships no wireless drivers", "device has ${deviceChips.joinToString(", ")}",
                 FeatureVerdict.INCOMPATIBLE,
-                "The image contains no wireless kernel modules at all, so this router's radio would stay dead.",
+                "The image's rootfs was readable and contains no wireless kernel modules at all, so this router's radio would stay dead.",
                 "Pick an image that includes the wireless drivers for ${deviceChips.first()}.",
+            )
+            imageDrivers.isEmpty() -> HardwareFeature(
+                "Wi-Fi hardware", "image unreadable - drivers unknown", "device has ${deviceChips.joinToString(", ")}",
+                FeatureVerdict.UNVERIFIED,
+                "Nothing could be extracted from this image, so the presence of wireless drivers could not be checked. " +
+                    "That is a limit of the static check, not evidence that drivers are missing.",
+                "Only flash a build that is published for your exact model + revision (then ${deviceChips.first()} support is guaranteed by the build).",
             )
             imageTargetsDevice -> HardwareFeature(
                 "Wi-Fi hardware", "image drivers match this chipset", "device has ${deviceChips.joinToString(", ")}",
                 FeatureVerdict.COMPATIBLE,
                 "Drivers/modules for this wireless hardware are present in the image.",
             )
-            else -> HardwareFeature(
+            readable -> HardwareFeature(
                 "Wi-Fi hardware", "image drivers: ${imageDrivers.take(4).joinToString(", ")}",
                 "device has ${deviceChips.joinToString(", ")}",
                 FeatureVerdict.INCOMPATIBLE,
@@ -412,10 +450,26 @@ object HardwareMatrix {
                     "boot but its Wi-Fi would never come up (and on some models the radios block the boot entirely).",
                 "Use the build for ${deviceChips.first()}, or add the correct driver package.",
             )
+            else -> HardwareFeature(
+                "Wi-Fi hardware", "image drivers: ${imageDrivers.take(4).joinToString(", ")} (rootfs only partially readable)",
+                "device has ${deviceChips.joinToString(", ")}",
+                FeatureVerdict.UNVERIFIED,
+                "Wireless modules for other chipsets were found, but the rootfs was too incomplete to check for " +
+                    "${deviceChips.first()} drivers, so the driver comparison is not conclusive.",
+                "Prefer a build that names your exact model + revision.",
+            )
         }
     }
 
-    private fun usbRow(facts: FirmwareFacts, device: DeviceProfile): HardwareFeature = when {
+    private fun usbRow(facts: FirmwareFacts, unpack: UnpackResult?, device: DeviceProfile): HardwareFeature = when {
+        // Unreadable image: the *claim* "image has no USB support" would be invented evidence.
+        // Boot-safety-wise it stays harmless either way, so report it as unverified, not green.
+        !facts.usbSupported && !rootfsReadable(unpack) -> HardwareFeature(
+            "USB / storage", "image unreadable - USB support unknown", if (device.usb) "device has USB ports" else "device has no USB",
+            FeatureVerdict.UNVERIFIED,
+            "Nothing could be extracted from the image, so its USB support could not be checked. On this device that " +
+                "does not affect booting (missing USB features are harmless, a missing port cannot be required).",
+        )
         !facts.usbSupported -> HardwareFeature(
             "USB / storage", "image has no USB support", if (device.usb) "device has USB ports" else "device has no USB",
             FeatureVerdict.COMPATIBLE,
@@ -527,10 +581,11 @@ object HardwareMatrix {
         }
     }
 
-    private fun wholeFlashRow(identity: ImageIdentity): HardwareFeature {
+    private fun wholeFlashRow(identity: ImageIdentity, unpack: UnpackResult): HardwareFeature {
         val looksWholeFlash = identity.primary == ImageFormat.RAW && identity.totalSize > 2L * 1024 * 1024
-        return if (looksWholeFlash) {
-            HardwareFeature(
+        val unrecognisedFlatBlob = identity.primary == ImageFormat.RAW && !unpack.usable
+        return when {
+            looksWholeFlash -> HardwareFeature(
                 "Image scope", "whole-flash dump (${identity.totalSize / (1024 * 1024)} MB, no recognised container)",
                 "you are flashing a full flash image",
                 FeatureVerdict.PARTIAL,
@@ -538,8 +593,16 @@ object HardwareMatrix {
                     "and calibration data of your router - that is exactly how routers become unrecoverable bricks.",
                 "Prefer a partition image, or understand that you are restoring a full backup to the *same* device it came from.",
             )
-        } else {
-            HardwareFeature(
+            unrecognisedFlatBlob -> HardwareFeature(
+                "Image scope", "unrecognised raw image (${identity.totalSize / 1024} KB, no container found)",
+                "recommended: partition image",
+                FeatureVerdict.PARTIAL,
+                "No container or filesystem could be recognised in this image, so it is impossible to confirm that it is " +
+                    "a safe partition image. If it is actually a whole-flash dump, writing it to a device it did not come " +
+                    "from erases the bootloader and radio calibration - an unrecoverable brick.",
+                "Prefer a partition image for your model; only restore whole-flash dumps to the exact device they were dumped from.",
+            )
+            else -> HardwareFeature(
                 "Image scope", "partition/firmware image (${identity.primary.label})", "recommended: partition image",
                 FeatureVerdict.COMPATIBLE,
                 "This image contains a firmware payload rather than a raw whole-flash dump.",
@@ -560,7 +623,7 @@ object HardwareMatrix {
         // "Could not extract a rootfs" (UBI/UBIFS/JFFS2/EXT mounts, vendor-encrypted blobs)
         // is NOT the same as "init failed": the first is a verification limit, not a hardware
         // mismatch. Flagging it red would tell users "do not flash" their own stock images.
-        val staticallyUnreadable = unpack != null && unpack.vfs.fileCount <= 5
+        val staticallyUnreadable = unpack != null && unpack.vfs.fileCount <= MIN_ENTRIES_FOR_READABLE_ROOTFS
         return when {
             reachedWeb -> HardwareFeature(
                 "Static boot test", "reached init + web UI in the sandbox", "${emulation.commandsRun} shell steps in ${emulation.elapsedMs} ms",
@@ -602,19 +665,26 @@ object HardwareMatrix {
 
     private fun formatSupportRow(identity: ImageIdentity, unpack: UnpackResult): HardwareFeature {
         val unsupported = unpack.unsupported
-        return if (unsupported.isEmpty()) {
-            HardwareFeature(
-                "Static analysis coverage", "full: container + rootfs were readable", "engine coverage: 100% of this image",
-                FeatureVerdict.COMPATIBLE,
-                "Every layer of this image could be unpacked and inspected on-device.",
-            )
-        } else {
-            HardwareFeature(
+        return when {
+            unsupported.isNotEmpty() -> HardwareFeature(
                 "Static analysis coverage", Text.truncate(unsupported.first(), 110), "engine could not fully inspect this image",
                 FeatureVerdict.PARTIAL,
                 "Part of this image could not be inspected on a phone (${unsupported.size} limitation(s)), so the report is " +
                     "based on partial evidence.",
                 "Treat unknown parts as unverified; a full check needs a PC-based unpacking tool.",
+            )
+            !unpack.usable -> HardwareFeature(
+                "Static analysis coverage", "no container or filesystem could be extracted", "engine coverage: outer format only",
+                FeatureVerdict.PARTIAL,
+                "Nothing in this image could be unpacked on-device, so the report is based on the outer layer alone " +
+                    "(format probe, strings, entropy). The image interior was NOT inspected - claiming full coverage here " +
+                    "would overstate what was checked.",
+                "Treat the interior as unverified; a full check needs a PC-based unpacking tool.",
+            )
+            else -> HardwareFeature(
+                "Static analysis coverage", "full: container + rootfs were readable", "engine coverage: 100% of this image",
+                FeatureVerdict.COMPATIBLE,
+                "Every layer of this image could be unpacked and inspected on-device.",
             )
         }
     }

@@ -339,7 +339,7 @@ object WebUiLab {
                 when {
                     path.startsWith("/__flashguard/") -> {
                         logRequest("$method $path${if (query.isNotEmpty()) "?$query" else ""}")
-                        handleInternal(path, method, query, out)
+                        handleInternal(path, query, out)
                     }
                     method == "POST" -> {
                         // No form on any firmware can actually be submitted in static preview:

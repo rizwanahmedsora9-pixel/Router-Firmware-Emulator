@@ -100,6 +100,10 @@ object FirmwareIdentifier {
         val primary = detectAt(bytes, 0, evidence)?.first ?: ImageFormat.RAW
         if (primary == ImageFormat.RAW) {
             evidence.add("No known firmware magic at offset 0 - treating as opaque flash image")
+            // A hex/ASCII preview of the header is the most useful thing a user can compare against
+            // the vendor's own download: it instantly shows whether the file is a text file, a
+            // truncated download, a padded flash dump or a vendor-wrapped payload.
+            evidence.add("First ${minOf(bytes.size, 32)} bytes: ${describeHead(bytes)}")
         }
 
         // Structured vendor headers get parsed for extra fields.
@@ -142,7 +146,11 @@ object FirmwareIdentifier {
         if (primary == ImageFormat.UBOOT_LEGACY) archHints.add("u-boot")
         val entropy = Entropy.of(bytes.copyOf(minOf(bytes.size, 512 * 1024)))
         evidence.add("Entropy ${String.format(java.util.Locale.US, "%.2f", entropy)} bits/byte over first ${Hex.humanBytes(minOf(bytes.size, 512 * 1024))}")
-        if (entropy > 7.6 && primary != ImageFormat.SQUASHFS) {
+        // High entropy only *means* "possibly encrypted" when no container was recognised. For a
+        // gzip/xz/squashfs/zip image it is the expected property of compressed data - flagging it
+        // there made every OpenWrt tarball look like a vendor-signed blob (and its signature row
+        // said "appears signed/encrypted" for a plain gzip).
+        if (entropy > 7.6 && primary == ImageFormat.RAW) {
             evidence.add("Very high entropy - payload may be encrypted or signed by the vendor")
         }
 
@@ -207,6 +215,19 @@ object FirmwareIdentifier {
             }
         }
         return null
+    }
+
+    /** "6b 65 72 6e 65 6c ... |kernel...|" - hex plus printable preview of the first bytes. */
+    private fun describeHead(data: ByteArray): String {
+        val n = minOf(data.size, 32)
+        val hex = (0 until n).joinToString(" ") { String.format(java.util.Locale.US, "%02x", data[it].toInt() and 0xFF) }
+        val ascii = buildString {
+            for (i in 0 until n) {
+                val c = data[i].toInt() and 0xFF
+                append(if (c in 0x20..0x7E) c.toChar() else '.')
+            }
+        }
+        return "$hex  |$ascii|"
     }
 
     // ------------------------------------------------------------------ structure parsers

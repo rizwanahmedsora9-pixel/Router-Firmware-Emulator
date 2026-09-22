@@ -28,6 +28,18 @@ so you can see exactly what the app believes the file is.
 Hard limits protect the phone: 60 000 files, 48 MiB extracted total, 32 MiB per file, 1.5 GiB of
 inflation, 4 MiB kept per file. Anything skipped is reported instead of silently ignored.
 
+When none of the known headers match, a **deep scan** sweeps the whole blob (bounded to 64 MB) for a
+payload at *any* offset - SquashFS, cpio, tar, gzip, xz, bzip2, zstd - and feeds what it finds back
+into the pipeline. This is what opens a vendor image whose proprietary header the app cannot parse
+but whose kernel/rootfs is a plain compressed stream. Candidates are validated before use (SquashFS
+version, gzip method/flag bytes, tar size field) and a candidate that turns out not to be a valid
+stream is logged as a dead end, never as a limitation of the firmware.
+
+If *nothing* can be read, the result records that explicitly (`UnpackResult.inspected == false`) and
+the rest of the pipeline switches to honesty mode: every content-based row becomes *needs
+verification*, the Wi-Fi/USB/signature/coverage rows say "could not check" instead of "not
+present", and the overall verdict is `CANNOT VERIFY` - never a claimed hardware mismatch.
+
 After unpacking, `FirmwareFacts` reads the rootfs like a human would: `/etc/openwrt_release`,
 banners, `/etc/init.d/*`, `/etc/config/*`, `/etc/passwd`/`shadow`, kernel modules, `www/` and
 CGI handlers, nvram defaults. This produces the facts (distro, target, arch, kernel version,
@@ -68,6 +80,18 @@ method (stock vs sysupgrade), whole-flash scope, static boot evidence and the re
 selected model. Verdicts: `INCOMPATIBLE` (red), `PARTIAL`/`UNVERIFIED` (amber), `COMPATIBLE`
 (green). Any red row forces **DO NOT FLASH**; amber rows force **NEEDS MANUAL REVIEW**; only an
 all-green matrix yields **SAFE TO FLASH AFTER BACKUP**.
+
+Two rules keep the verdicts honest:
+
+* **A row may only go red on evidence, never on missing evidence.** "The image ships no wireless
+  drivers" is a fact about a file we read; for a file we could not read it becomes *needs
+  verification* with the reason. Genuine mismatches (wrong SoC, NAND image on NOR, file bigger than
+  the flash chip) stay red even for an unreadable blob, because their evidence is in the bytes we do
+  have.
+* **Unverified rows are not risk.** They contribute little to the score and cap it at 55, so an
+  image nothing could be read from can never show 100/100 - that number is reserved for images with
+  a proven incompatibility. The overall verdict for "no mismatch, but nothing readable" is
+  `CANNOT VERIFY`, which is deliberately distinct from `DO NOT FLASH - hardware mismatch detected`.
 
 Under the matrix, `Heuristics` adds security/quality findings: empty root password, default
 accounts, telnet, WPS, hardcoded credentials, world-writable web files, old kernels

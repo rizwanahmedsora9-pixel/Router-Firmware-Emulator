@@ -42,6 +42,13 @@ Tab **Analyze**:
 | **Amber** | Something is unverifiable (static analysis limit) | Verify it manually - check the row's "how to confirm" text |
 | **Red** | Hardware-incompatible | **Do not flash this file.** The row names the exact conflict |
 
+If the banner instead says *"Could not verify this image - nothing inside it could be unpacked"*,
+the app could not read anything out of the file: every content-based row is amber and there is no
+verdict about your router either way. Check the *"How the file was identified"* section at the top of
+the report (it prints the file's first bytes, its entropy and the containers it looked for) and
+compare the file against the vendor's own download - the usual causes are a truncated download, a
+vendor-encrypted image, a whole-flash dump, or a file that is not firmware at all.
+
 Rows worth understanding:
 
 * **CPU architecture** - an image for `mipsel` will not run on a `mips`/ARM board. Red.
@@ -52,11 +59,15 @@ Rows worth understanding:
   uImage/FIT/sysupgrade images. Red when they disagree.
 * **Vendor signature** - locked devices refuse unsigned images. Red.
 * **Wi-Fi** - drivers present in the image for chips your device does not have: the radio will not
-  come up after flashing. Red.
+  come up after flashing. Red. (Amber, not red, when the image could not be unpacked: the app has no
+  driver list to compare, and it will say so instead of guessing.)
 * **Whole-flash dump** - a full flash image includes the bootloader; writing it is the classic
-  unrecoverable brick. Red.
+  unrecoverable brick. Red when the file really is a whole-flash image; for a raw blob of another
+  size the row stays amber rather than pretending to know what the file is.
 * **Static boot test** - how far the sandbox got: header, kernel, rootfs, init scripts, services,
   web UI. If it does not reach a running userspace, treat the image as unproven.
+* **Static analysis coverage** - how much of the file the engine could actually read. If it says
+  "header bytes + size only", none of the content-based rows carry evidence - see the note above.
 
 ### 5. Click through the emulated firmware UI
 Tab **Emulator** -> *Start emulated web UI*. FlashGuard serves the firmware's own `www/` pages from

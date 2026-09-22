@@ -7,6 +7,7 @@ import com.flashguard.engine.core.FindingLevel
 import com.flashguard.engine.core.FirmwareFacts
 import com.flashguard.engine.core.HardwareFeature
 import com.flashguard.engine.core.ProbeResult
+import com.flashguard.engine.core.RiskVerdict
 import com.flashguard.engine.emu.WebUiLab
 import com.flashguard.engine.util.Hex
 import java.text.SimpleDateFormat
@@ -80,6 +81,9 @@ object Report {
         sb.append("    \"summary\": ${q(report.verdict.display)},\n")
         sb.append("    \"riskScore\": ${report.riskScore},\n")
         sb.append("    \"redFlags\": ${report.redFlags().size},\n")
+        // An unreadable image has zero red flags but is still not flashable on this evidence.
+        sb.append("    \"verifiedMismatches\": ${report.redFlags().size},\n")
+        sb.append("    \"inspectionFailed\": ${report.verdict == RiskVerdict.CANNOT_VERIFY},\n")
         sb.append("    \"nextSteps\": ${arr(report.nextSteps)}\n")
         sb.append("  },\n")
 
@@ -184,8 +188,32 @@ object Report {
         }
         sb.append('\n')
 
+        // Why the file was identified the way it was. Without this section a user sees
+        // "Raw/unknown binary" and has no way to tell a truncated download from a vendor-encrypted
+        // image - the evidence is what makes the report auditable instead of a black box.
+        val evidence = report.identity.evidence
+        if (evidence.isNotEmpty()) {
+            sb.append("## How the file was identified\n\n")
+            for (e in evidence.take(14)) sb.append("- $e\n")
+            if (evidence.size > 14) sb.append("- ... ${evidence.size - 14} more observation(s)\n")
+            sb.append('\n')
+        }
+
+        val red = report.redFlags()
+        val unverified = report.features.count { it.verdict == FeatureVerdict.UNVERIFIED || it.verdict == FeatureVerdict.PARTIAL }
         sb.append("## Verdict: ${report.verdict.display}\n\n")
-        sb.append("Risk score **${report.riskScore}/100** - ${report.redFlags().size} hardware-incompatible feature(s).\n\n")
+        sb.append("Risk score **${report.riskScore}/100** - ")
+        if (red.isNotEmpty()) {
+            sb.append("${red.size} hardware-incompatible feature(s): ${red.joinToString(", ") { it.feature }}.\n\n")
+        } else {
+            // Never let "0 hardware mismatch(es)" read like a green light when nothing could be read.
+            sb.append("no verified hardware mismatch")
+            if (unverified > 0) {
+                sb.append("; $unverified check(s) could not be verified from the file's contents")
+                if (report.verdict == RiskVerdict.CANNOT_VERIFY) sb.append(" because nothing inside it could be unpacked")
+            }
+            sb.append(".\n\n")
+        }
 
         sb.append("## Hardware compatibility (red = do not flash)\n\n")
         sb.append("| Feature | Image | Your router | Result |\n|---|---|---|---|\n")
@@ -199,7 +227,13 @@ object Report {
             sb.append("| ${f.feature} | ${md(f.imageWants)} | ${md(f.deviceHas)} | $mark |\n")
         }
         sb.append('\n')
-        for (f in report.features.filter { it.verdict.isRed || it.verdict == FeatureVerdict.PARTIAL }) {
+        // Red and caution rows always explain themselves; unverified rows only when they carry advice
+        // (otherwise a report for an unreadable image would be nothing but boilerplate).
+        val explained = report.features.filter {
+            it.verdict.isRed || it.verdict == FeatureVerdict.PARTIAL ||
+                (it.verdict == FeatureVerdict.UNVERIFIED && it.mitigation != null)
+        }
+        for (f in explained.take(10)) {
             sb.append("- **${f.feature}**: ${f.why}\n")
             f.mitigation?.let { sb.append("  - _What to do:_ $it\n") }
         }

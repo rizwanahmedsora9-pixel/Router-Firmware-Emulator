@@ -105,6 +105,33 @@ private fun gzip(data: ByteArray): ByteArray {
     return bos.toByteArray()
 }
 
+/**
+ * Deterministic high-entropy blob with no firmware magic anywhere - the "the app has no idea what
+ * this file is" case (wrong download, encrypted vendor image, whole-flash dump of an unknown
+ * format).
+ */
+private fun opaqueBlob(size: Int): ByteArray {
+    val b = ByteArray(size)
+    var s = 0x12345678L
+    for (i in 0 until size) {
+        s = s * 6364136223846793005L + 1442695040888963407L
+        b[i] = ((s shr 33) and 0xFF).toByte()
+    }
+    return b
+}
+
+/**
+ * A proprietary vendor header (which no parser recognises) followed by a payload we *can* read.
+ * The header length is deliberately not one of the engine's candidate offsets, so only the
+ * unpacker's deep scan can find the payload.
+ */
+private fun vendorWrapped(payload: ByteArray, headerSize: Int = 0x3C0): ByteArray {
+    val header = ByteArray(headerSize) { 0x5A }
+    val magic = "PROPRIETARY-BOOT-HDR".toByteArray()
+    System.arraycopy(magic, 0, header, 0, magic.size)
+    return header + payload
+}
+
 /** A realistic OpenWrt-flavoured rootfs used as the primary fixture. */
 private fun openWrtLikeRootfs(): Pair<List<Pair<String, ByteArray>>, List<String>> {
     val entries = mutableListOf<Pair<String, ByteArray>>()
@@ -276,6 +303,95 @@ fun main(args: Array<String>) {
     r.check("handles empty files without crashing") {
         val id = FirmwareIdentifier.identify(ByteArray(0), "empty.bin")
         r.expect(id.primary == ImageFormat.EMPTY, "expected EMPTY")
+    }
+
+    // ------------------------------------------------------------------ honesty: missing evidence
+    r.check("an unreadable image is reported as unverifiable, never as a hardware mismatch") {
+        val blob = opaqueBlob(1_560_000)
+        val device = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        val session = FirmwareLab.analyze(blob, "mystery-fw.bin", device)
+        r.expect(session.identity.primary == ImageFormat.RAW, "expected RAW, got ${session.identity.primary}")
+        r.expect(session.unpack.importedFiles == 0, "nothing should be extractable, got ${session.unpack.importedFiles}")
+        r.expect(!session.unpack.inspected, "an empty extraction must not count as inspected")
+        val red = session.report.redFlags()
+        r.expect(red.isEmpty(), "no red row may be derived from missing evidence: " + red.joinToString { it.feature })
+        val wifi = session.report.features.first { it.feature == "Wi-Fi hardware" }
+        r.expect(
+            wifi.verdict != FeatureVerdict.INCOMPATIBLE,
+            "the Wi-Fi row declared the radio dead without ever reading the image: ${wifi.why}",
+        )
+        val coverage = session.report.features.first { it.feature == "Static analysis coverage" }
+        r.expect(
+            coverage.verdict != FeatureVerdict.COMPATIBLE,
+            "coverage claimed the image was fully readable: ${coverage.imageWants}",
+        )
+        r.expect(
+            session.report.verdict == com.flashguard.engine.core.RiskVerdict.CANNOT_VERIFY,
+            "expected CANNOT VERIFY, got ${session.report.verdict}",
+        )
+        r.expect(session.report.riskScore < 100, "an unreadable image must not score 100/100 (got ${session.report.riskScore})")
+        val md = session.markdownReport()
+        r.expect(!md.contains("hardware mismatch detected"), "the report claimed a hardware mismatch it cannot prove")
+        r.expect(!md.contains("hardware-incompatible feature(s)"), "the report counted mismatches it cannot prove")
+        r.expect(md.contains("How the file was identified"), "the report does not show the identification evidence")
+        r.expect(md.contains("First 32 bytes"), "the report does not show the file's header bytes")
+        r.expect(md.contains("nothing could be read inside this file"), "the report does not admit the coverage limit")
+        r.expect(session.jsonReport().contains("\"inspectionFailed\": true"), "the JSON does not flag the failed inspection")
+    }
+    r.check("an unreadable image still reports genuine, evidence-backed mismatches") {
+        // Silence about *content* must not silence what the bytes do prove: a file larger than the
+        // whole flash chip cannot be written, whatever is inside it - that row stays red.
+        val blob = opaqueBlob(6 * 1024 * 1024)
+        val device = DeviceDb.byId("tplink-tl-wr720n-v2")!! // 4 MB NOR
+        val session = FirmwareLab.analyze(blob, "too-big.bin", device)
+        val flash = session.report.features.first { it.feature == "Flash size" }
+        r.expect(flash.verdict == FeatureVerdict.INCOMPATIBLE, "a file bigger than the flash must stay RED: ${flash.why}")
+        r.expect(
+            session.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH,
+            "a proven mismatch must outrank 'cannot verify', got ${session.report.verdict}",
+        )
+    }
+    r.check("deep scan reads a rootfs behind an unparseable vendor header") {
+        val device = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        for ((label, payload) in listOf("gzip" to gzTar, "tar" to tarBytes)) {
+            val image = vendorWrapped(payload)
+            val session = FirmwareLab.analyze(image, "vendor-wrapper-$label.bin", device)
+            r.expect(
+                session.unpack.importedFiles > 20,
+                "deep scan did not open the $label payload behind the vendor header (${session.unpack.importedFiles} objects)",
+            )
+            r.expect(session.unpack.inspected, "the unwrapped $label image should count as inspected")
+            r.expect(session.emulation.reachedWebUi(), "the rootfs behind the vendor header did not boot ($label)")
+            r.expect(
+                session.report.verdict != com.flashguard.engine.core.RiskVerdict.CANNOT_VERIFY,
+                "verdict still claims nothing could be read ($label)",
+            )
+            r.expect(session.unpack.notes.any { it.contains("Deep scan") }, "no deep-scan note in the unpack log ($label)")
+        }
+    }
+    r.check("a legitimate UBI/NAND image is 'cannot verify', not 'hardware mismatch'") {
+        val ubi = ByteArray(2048)
+        System.arraycopy("UBI#".toByteArray(), 0, ubi, 0, 4)
+        ubi[4] = 1
+        writeU32be(ubi, 8, 64)
+        writeU32be(ubi, 12, 2048)
+        writeU32be(ubi, 24, 128 * 1024)
+        val device = DeviceDb.byId("netgear-r7800")!! // 128 MB NAND
+        val session = FirmwareLab.analyze(ubi, "factory.ubi", device)
+        r.expect(session.unpack.importedFiles == 0, "a UBI rootfs cannot be unpacked statically")
+        r.expect(
+            session.report.redFlags().isEmpty(),
+            "a UBI image on a NAND router must not be called incompatible: " +
+                session.report.redFlags().joinToString { "${it.feature}: ${it.why}" },
+        )
+        r.expect(
+            session.report.verdict == com.flashguard.engine.core.RiskVerdict.CANNOT_VERIFY,
+            "expected CANNOT VERIFY for a statically unreadable UBI image, got ${session.report.verdict}",
+        )
+        r.expect(
+            session.report.nextSteps.first().contains("could not read anything inside it"),
+            "next steps should lead with the real problem: ${session.report.nextSteps.first()}",
+        )
     }
 
     // ------------------------------------------------------------------ compression + containers

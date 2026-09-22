@@ -78,17 +78,18 @@ object DeviceDb {
             extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
             openwrtSupport = "yes (ramips/mt7620)", stockLogin = "admin / admin",
             recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
-            notes = "v1 uses the MT7620AT SoC. v2/v3/v4 use the MT7628AN - v1 firmware will NOT boot on them and vice versa.",
+            notes = "MT7620AT WR720N board-spin profile. Do NOT use it for the TL-WR720N(EU) v2 stock unit, which is a 2 MB AR9331/VxWorks device.",
         ),
         DeviceProfile(
             id = "tplink-tl-wr720n-v2", brand = "TP-Link", model = "TL-WR720N", revision = "v2",
-            soc = "MediaTek MT7628AN", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 580,
-            ramMb = 32, flashMb = 4, flashLayout = "4 MB NOR (u-boot + kernel + rootfs)", flashType = "NOR",
-            bootloader = "U-Boot", wifiChips = listOf("MediaTek MT7628AN built-in (2.4 GHz b/g/n)"),
-            extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
-            openwrtSupport = "yes (ramips/mt76x8)", stockLogin = "admin / admin",
-            recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
-            notes = "v2/v3/v4 share the MT7628AN SoC (v1 is a different SoC: MT7620AT). v2/v3 have 4 MB flash, v4 has 8 MB - check the image size against the revision.",
+            soc = "Atheros AR9331", cpuFamily = CpuFamily.MIPS_BE, cpuCores = 1, cpuMhz = 400,
+            ramMb = 16, flashMb = 2, flashLayout = "2 MB NOR (TP-Link IMG0/VxWorks stock layout)", flashType = "NOR",
+            bootloader = "TP-Link / VxWorks bootloader", wifiChips = listOf("Atheros AR9331 built-in (2.4 GHz b/g/n)"),
+            extraFeatures = listOf("2x 100M LAN", "1x 100M WAN", "VxWorks stock firmware"), ethernetPorts = 3, gigabit = false,
+            openwrtSupport = "not mainline/practical on stock 2 MB flash; use only exact WR720N v2 stock images unless hardware-modified",
+            stockLogin = "admin / admin",
+            recovery = "TP-Link recovery/TFTP for TL-WR720N v2; keep a full 2 MB flash backup including calibration data before experimenting",
+            notes = "Corrected profile for the TL-WR720N(EU) v2 stock unit: 2 MB flash, 16 MB RAM, AR9331 and VxWorks/IMG0 firmware. Do not use MT7628 or 4 MB WR720N community images on this board.",
         ),
         DeviceProfile(
             id = "tplink-tl-wr720n-v3", brand = "TP-Link", model = "TL-WR720N", revision = "v3",
@@ -98,7 +99,7 @@ object DeviceDb {
             extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
             openwrtSupport = "yes (ramips/mt76x8)", stockLogin = "admin / admin",
             recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
-            notes = "v2/v3/v4 share the MT7628AN SoC (v1 is a different SoC: MT7620AT). v2/v3 have 4 MB flash, v4 has 8 MB - check the image size against the revision.",
+            notes = "Community/open hardware profile for MT7628AN WR720N board spins. Do NOT use it for the TL-WR720N(EU) v2 stock unit, which is a 2 MB AR9331/VxWorks device.",
         ),
         DeviceProfile(
             id = "tplink-tl-wr720n-v4", brand = "TP-Link", model = "TL-WR720N", revision = "v4",
@@ -108,7 +109,7 @@ object DeviceDb {
             extraFeatures = listOf("3x 100M LAN", "1x 100M WAN"), ethernetPorts = 4, gigabit = false,
             openwrtSupport = "yes (ramips/mt76x8)", stockLogin = "admin / admin",
             recovery = "TFTP recovery: hold reset while powering on, router is 192.168.1.1, serve the image renamed per the vendor recovery page",
-            notes = "v4 has 8 MB flash (v2/v3 have 4 MB) on the same MT7628AN SoC. v1 (MT7620AT) is a different SoC - v1 firmware will not boot here.",
+            notes = "MT7628AN/8 MB WR720N board-spin profile. Do NOT use it for the TL-WR720N(EU) v2 stock unit, which is a 2 MB AR9331/VxWorks device.",
         ),
         // ---------------------------------------------------------------- Netgear
         DeviceProfile(
@@ -294,8 +295,8 @@ object DeviceDb {
             extraFeatures = listOf("typical 2012-2016 budget router"), ethernetPorts = 4, gigabit = false,
             openwrtSupport = "likely (ramips/mt7620)", stockLogin = "unknown",
             recovery = "TFTP recovery if the bootloader still runs",
-            notes = "Same hardware class as TP-Link TL-WR720N v1, WDR3600 v1 and other MT7620AT routers. " +
-                "Test MT7620-board images here; v2/v3/v4 WR720N (MT7628) images will be flagged as a SoC mismatch.",
+            notes = "Same hardware class as MT7620AT router board spins. " +
+                "Test MT7620-board images here; AR9331/VxWorks WR720N v2 stock images and MT7628 board images will be flagged as a SoC mismatch.",
         ),
         DeviceProfile(
             id = "generic-mt7628-32-4", brand = "Generic", model = "MediaTek MT7628 32/4 device", revision = "",
@@ -305,8 +306,8 @@ object DeviceDb {
             extraFeatures = listOf("typical 2015-2019 budget router"), ethernetPorts = 4, gigabit = false,
             openwrtSupport = "likely (ramips/mt76x8)", stockLogin = "unknown",
             recovery = "TFTP recovery if the bootloader still runs",
-            notes = "Same hardware class as TP-Link TL-WR720N v2/v3/v4 and other MT7628AN routers. " +
-                "Test MT7628-board images here; v1 WR720N (MT7620) images will be flagged as a SoC mismatch.",
+            notes = "Same hardware class as MT7628AN router board spins (including some WR720N community targets), not the TL-WR720N(EU) v2 stock 2 MB AR9331 unit. " +
+                "Test MT7628-board images here; AR9331/VxWorks WR720N v2 stock images will be flagged as a SoC mismatch.",
         ),
         DeviceProfile(
             id = "custom", brand = "My own router", model = "Custom / not in the list", revision = "",

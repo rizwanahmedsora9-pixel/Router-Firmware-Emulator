@@ -64,7 +64,7 @@ class FirmwareUnpacker(
         // Pre-seed nested regions discovered by the identifier (vendor header + payload layouts).
         for (layer in identity.layers.flatMap { it.flattenTree() }) {
             if (layer.offset <= 0) continue
-            if (layer.format == ImageFormat.RAW) continue
+            if (layer.format == ImageFormat.RAW || layer.format == ImageFormat.TPLINK_IMG0) continue
             var length = layer.length
             if (length <= 0) {
                 // Sweep finds (no length). Recover a usable bound: SquashFS carries its
@@ -154,6 +154,9 @@ class FirmwareUnpacker(
             ImageFormat.UBI, ImageFormat.UBIFS, ImageFormat.JFFS2, ImageFormat.EXT -> {
                 unsupported.add("${job.origin}: ${identity.primary.label} cannot be unpacked statically - the rootfs needs a mount (UBIFS/JFFS2/ext4)")
                 return 0
+            }
+            ImageFormat.TPLINK_IMG0 -> {
+                return unpackTpLinkImg0VxWorks(data, job.origin)
             }
             ImageFormat.TPLINK_SIGNED -> {
                 unsupported.add("${job.origin}: vendor-signed/encrypted TP-Link image - payload cannot be inspected")
@@ -298,6 +301,134 @@ class FirmwareUnpacker(
 
     private class DeepMagic(val bytes: ByteArray, val format: ImageFormat, val label: String)
 
+    /**
+     * Extracts the Wind River web-management store used by the official TP-Link TL-WR720N v2
+     * IMG0/VxWorks firmware. This is not a Linux rootfs: VxWorks packs the admin UI as 48-byte
+     * records pointing at per-file LZMA-alone streams. Pulling those pages into /www lets the app
+     * identify and preview the stock web UI instead of treating the official 2 MB image as opaque.
+     */
+    private fun unpackTpLinkImg0VxWorks(data: ByteArray, origin: String): Int {
+        val storeBase = findWr720nStoreBase(data)
+        if (storeBase < 0) {
+            unsupported.add("$origin: TP-Link IMG0/VxWorks image recognised, but no supported Wind River web store was found")
+            return 0
+        }
+
+        var imported = 0
+        val lzmaMagic = byteArrayOf(0x5A, 0x00, 0x00, 0x80.toByte(), 0x00) // props 0x5A + 8 MiB dictionary
+        val firstRecord = 0x40
+        val dataArea = 0x24A0
+        val stride = 48
+        val nameLen = 40
+        var pos = firstRecord
+        while (pos + stride <= dataArea && storeBase + pos + stride <= data.size && imported < Limits.MAX_FILES) {
+            val rawName = data.copyOfRange(storeBase + pos, storeBase + pos + nameLen)
+            var nul = -1
+            for (i in rawName.indices) {
+                if (rawName[i] == 0.toByte()) {
+                    nul = i
+                    break
+                }
+            }
+            val nameBytes = rawName.copyOfRange(0, if (nul >= 0) nul else rawName.size)
+            if (nameBytes.isEmpty() || nameBytes.any { c -> (c.toInt() and 0xFF) !in 0x20..0x7E }) break
+            val name = String(nameBytes, Charsets.ISO_8859_1)
+            val size = Bin.u32be(data, storeBase + pos + nameLen).toInt()
+            val relOff = Bin.u32be(data, storeBase + pos + nameLen + 4).toInt()
+            val streamStart = storeBase + relOff + 20
+            if (size <= 0 || streamStart < 0 || streamStart + 13 > data.size || streamStart + size > data.size) break
+            if (!startsWith(data, streamStart, lzmaMagic)) break
+
+            val decoded = Compression.decodeAs(data, Compression.Kind.LZMA, streamStart, Limits.MAX_INFLATE_BYTES)
+            if (decoded == null) {
+                unsupported.add("$origin: Wind River web file '$name' uses LZMA, but this build could not decode it")
+                pos += stride
+                continue
+            }
+            val safeName = name.replace('\\', '_').replace('/', '_')
+            if (vfs.addFile("/www/$safeName", decoded.bytes, decoded.bytes.size.toLong(), source = "TP-Link IMG0 Wind River web store")) {
+                imported++
+            }
+            pos += stride
+        }
+
+        // Record the two large VxWorks LZMA code images as boot artifacts without keeping their
+        // bytes in RAM. This makes the boot-chain report show that a kernel/OS payload exists.
+        addVxWorksCodeMarkers(data)
+
+        if (imported > 0) {
+            notes.add("TP-Link IMG0/VxWorks web store: $imported files imported from 0x${storeBase.toString(16)}")
+        } else {
+            unsupported.add("$origin: TP-Link IMG0/VxWorks web store found, but no files could be decoded")
+        }
+        return imported
+    }
+
+    private fun findWr720nStoreBase(data: ByteArray): Int {
+        val magic = byteArrayOf(0x5F, 0xA9.toByte(), 0x1A, 0xB1.toByte())
+        var from = 0
+        while (from >= 0) {
+            val idx = Bin.indexOf(data, magic, from)
+            if (idx < 0) return -1
+            if (looksLikeWr720nStore(data, idx)) return idx
+            from = idx + 1
+        }
+        return -1
+    }
+
+    private fun looksLikeWr720nStore(data: ByteArray, base: Int): Boolean {
+        val firstRecord = 0x40
+        val nameLen = 40
+        if (base + firstRecord + 48 > data.size) return false
+        val name = data.copyOfRange(base + firstRecord, base + firstRecord + nameLen).takeWhile { it.toInt() != 0 }
+        if (name.isEmpty() || name.any { c -> (c.toInt() and 0xFF) !in 0x20..0x7E }) return false
+        val size = Bin.u32be(data, base + firstRecord + nameLen).toInt()
+        val relOff = Bin.u32be(data, base + firstRecord + nameLen + 4).toInt()
+        val streamStart = base + relOff + 20
+        return size > 13 && streamStart + 5 <= data.size &&
+            data[streamStart] == 0x5A.toByte() && data[streamStart + 1] == 0x00.toByte() &&
+            data[streamStart + 2] == 0x00.toByte() && data[streamStart + 3] == 0x80.toByte() && data[streamStart + 4] == 0x00.toByte()
+    }
+
+    private fun startsWith(data: ByteArray, offset: Int, magic: ByteArray): Boolean {
+        if (offset < 0 || offset + magic.size > data.size) return false
+        for (i in magic.indices) if (data[offset + i] != magic[i]) return false
+        return true
+    }
+
+    private fun indexOfByte(data: ByteArray, needle: Byte, from: Int): Int {
+        var i = maxOf(0, from)
+        while (i < data.size) {
+            if (data[i] == needle) return i
+            i++
+        }
+        return -1
+    }
+
+    private fun addVxWorksCodeMarkers(data: ByteArray) {
+        val lzmaHeaders = ArrayList<Pair<Int, Long>>()
+        var from = 0
+        while (lzmaHeaders.size < 2 && from + 13 <= data.size) {
+            val idx = indexOfByte(data, 0x6E.toByte(), from)
+            if (idx < 0 || idx + 13 > data.size) break
+            val dict = Bin.u32le(data, idx + 1)
+            val usize = Bin.u64le(data, idx + 5)
+            if (dict == 0x800000L && usize in 128 * 1024L..16 * 1024 * 1024L) {
+                lzmaHeaders.add(idx to usize)
+            }
+            from = idx + 1
+        }
+        for ((i, h) in lzmaHeaders.withIndex()) {
+            val (off, usize) = h
+            vfs.addFile(
+                "/boot/vxworks-kernel-image-${i + 1}.lzma",
+                content = null,
+                size = usize,
+                source = "TP-Link IMG0 VxWorks LZMA stream @0x${off.toString(16)}",
+            )
+        }
+    }
+
     private companion object {
         /** How much of a blob the deep scan sweeps (phone-friendly: no 4 GB dumps). */
         const val DEEP_SCAN_BYTES = 64 * 1024 * 1024
@@ -371,6 +502,15 @@ class FirmwareFacts(
             var target: String? = null
             var arch: String? = null
             var version: String? = null
+            val isTpLinkImg0 = identity.primary == ImageFormat.TPLINK_IMG0
+            val isWr720nImg0 = isTpLinkImg0 && (identity.model?.contains("WR720N", true) == true || identity.archHints.any { it.contains("ar9331", true) })
+            if (isTpLinkImg0) {
+                distro = "TP-Link VxWorks"
+                target = if (isWr720nImg0) "atheros/ar9331" else "vxworks"
+                arch = "mips"
+                version = identity.version
+                notes.add("TP-Link IMG0/VxWorks stock firmware metadata inferred from the container")
+            }
             configFiles["/etc/openwrt_release"]?.let { t ->
                 distro = Regex("DISTRIB_ID='?([^'\n]+)").find(t)?.groupValues?.get(1)?.trim()
                 version = Regex("DISTRIB_RELEASE='?([^'\n]+)").find(t)?.groupValues?.get(1)?.trim()
@@ -395,10 +535,14 @@ class FirmwareFacts(
             configFiles["/tmp/sysinfo/model"]?.let { notes.add("sysinfo model: ${Text.truncate(it.trim(), 60)}") }
 
             // kernel version + modules
-            val kernelVersion = vfs.findByContains("/etc/modules/")
-                .firstOrNull()
-                ?.let { null }
-                ?: Regex("Linux version\\s+([\\d.\\w\\-+]+)").find(identity.evidence.joinToString(" "))?.groupValues?.get(1)
+            val kernelVersion = if (isTpLinkImg0) {
+                identity.version?.let { "VxWorks $it" } ?: "VxWorks"
+            } else {
+                vfs.findByContains("/etc/modules/")
+                    .firstOrNull()
+                    ?.let { null }
+                    ?: Regex("Linux version\\s+([\\d.\\w\\-+]+)").find(identity.evidence.joinToString(" "))?.groupValues?.get(1)
+            }
 
             val modules = vfs.findByContains("/modules/")
                 .filter { it.path.endsWith(".ko") }
@@ -406,11 +550,15 @@ class FirmwareFacts(
                 .distinct()
                 .take(400)
 
-            val wirelessDrivers = modules.filter {
-                it.contains("ath") || it.contains("mt7") || it.contains("mt76") || it.contains("rt2") ||
-                    it.contains("rtl") || it.contains("brcm") || it.contains("mac80211") || it.contains("cfg80211") ||
-                    it.contains("iwl") || it.contains("carl9170") || it.contains("rt2800") ||
-                    it == "wl" || it.startsWith("wl-") || it.contains("b43") || it == "broadcom-wl"
+            val wirelessDrivers = if (isWr720nImg0) {
+                listOf("Atheros AR9331 VxWorks monolithic wireless driver")
+            } else {
+                modules.filter {
+                    it.contains("ath") || it.contains("mt7") || it.contains("mt76") || it.contains("rt2") ||
+                        it.contains("rtl") || it.contains("brcm") || it.contains("mac80211") || it.contains("cfg80211") ||
+                        it.contains("iwl") || it.contains("carl9170") || it.contains("rt2800") ||
+                        it == "wl" || it.startsWith("wl-") || it.contains("b43") || it == "broadcom-wl"
+                }
             }
             val switchDrivers = modules.filter {
                 it.contains("switch") || it.contains("dsa") || it.contains("mvsw") || it.contains("rtl83") || it.contains("mt7530")
@@ -486,6 +634,7 @@ class FirmwareFacts(
                 SocFamilies.fromText(text)?.let { if (it.name !in socHints) socHints.add(it.name) }
             }
             configFiles.values.forEach { harvestSoc(it) }
+            if (isWr720nImg0 && "Atheros AR9331" !in socHints) socHints.add("Atheros AR9331")
             var socScanned = 0
             for (f in vfs.allFiles()) {
                 if (socScanned >= 160) break
@@ -496,7 +645,11 @@ class FirmwareFacts(
             if (socHints.isNotEmpty()) notes.add("SoC markers in rootfs: " + socHints.joinToString(", "))
 
             val rootfsSize = vfs.allFiles().sumOf { it.size }
-            val requiredFlashMb = if (rootfsSize > 0) rootfsSize / (1024.0 * 1024.0) * 1.15 else null
+            val requiredFlashMb = when {
+                isTpLinkImg0 -> identity.totalSize / (1024.0 * 1024.0)
+                rootfsSize > 0 -> rootfsSize / (1024.0 * 1024.0) * 1.15
+                else -> null
+            }
 
             return FirmwareFacts(
                 distro = distro,

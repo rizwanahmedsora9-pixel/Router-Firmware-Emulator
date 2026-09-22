@@ -5,13 +5,13 @@ package com.flashguard.engine.core
  * is in the router".
  *
  * Different SoCs of the same CPU architecture are NOT interchangeable: a kernel built for a
- * MT7620AT board will not find its drivers/interrupts/flash layout on a MT7628AN board. This is
- * exactly why the same model with different hardware revisions cannot flash each other's
- * firmware - the classic case is the TP-Link TL-WR720N, where v1 ships an MT7620AT and
- * v2/v3/v4 ship a MT7628AN.
+ * MT7620AT board will not find its drivers/interrupts/flash layout on a MT7628/AR9331 board.
+ * This is exactly why the same model with different hardware revisions cannot flash each other's
+ * firmware - TP-Link's WR720N family exists in very small VxWorks/AR9331 2 MB builds as well as
+ * other board spins used by community images.
  *
  * Matching is deliberately prefix-based on alphanumeric tokens: evidence strings arrive as
- * "MediaTek MT7620AT", "mediatek,mt7620a-soc", "ramips/mt7621", "TP-Link TL-WR720N v1 (MT7620)"
+ * "MediaTek MT7620AT", "mediatek,mt7620a-soc", "ramips/mt7621", "TP-Link TL-WR720N v2 (AR9331)"
  * and all of them must resolve to the same family.
  */
 object SocFamilies {
@@ -28,6 +28,7 @@ object SocFamilies {
         Family("MediaTek MT7688", "MediaTek", listOf("mt7688")),
         Family("MediaTek MT798x", "MediaTek", listOf("mt7981", "mt7986", "mt7988")),
         // Atheros / Qualcomm
+        Family("Atheros AR9331", "Qualcomm/Atheros", listOf("ar9331")),
         Family("Qualcomm QCA9531 (AR9341)", "Qualcomm", listOf("qca9531", "ar9341")),
         Family("Qualcomm QCA9558 (AR9344)", "Qualcomm", listOf("qca9558", "ar9344")),
         Family("Qualcomm QCA9563 (AR9563)", "Qualcomm", listOf("qca9563", "qca9561", "ar9561")),

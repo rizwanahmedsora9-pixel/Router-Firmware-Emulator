@@ -18,6 +18,7 @@ enum class ImageFormat(
     UBOOT_SCRIPT("U-Boot script image", false),
     NETGEAR_CHK("Netgear CHK (2A23245E)", true, "HEADER + kernel + squashfs/rootfs"),
     TPLINK_BIN("TP-Link firmware .bin", true, "header + bootloader/kernel/rootfs sections"),
+    TPLINK_IMG0("TP-Link IMG0 / VxWorks firmware", true, "older TP-Link stock image: IMG0 headers + VxWorks + Wind River web store"),
     TPLINK_SIGNED("TP-Link signed/encrypted image", false, "Newer models wrap the payload in a vendor signature"),
     DLINK_SHR("D-Link SHRS/image", true),
     SERCOMM("Sercomm package", true),
@@ -283,7 +284,7 @@ enum class CpuFamily(val display: String, val kernelArchKeywords: List<String>) 
     //    MediaTek MT76xx (MT7620/MT7621/MT7628) and Ralink RT305x - i.e. the "ramips" target
     //    is BIG-endian, /proc/cpuinfo on these boards reads "System architecture: 00000001".
     //  - MIPS EL: Broadcom BCM63xx and Xburst class.
-    MIPS_BE("MIPS big-endian (mips/ar71xx/ramips-family)", listOf("mipseb", "ar71xx", "ath79", "ar9344", "qca", "ramips", "mt7620", "mt7621", "mt7628", "mt76x8", "rt305x")),
+    MIPS_BE("MIPS big-endian (mips/ar71xx/ramips-family)", listOf("mipseb", "ar71xx", "ath79", "ar9331", "ar9344", "qca", "ramips", "mt7620", "mt7621", "mt7628", "mt76x8", "rt305x")),
     MIPSEL("MIPS little-endian (mipsel/brcm63xx/xburst)", listOf("mipsel", "brcm63", "xburst")),
     ARM_LE("ARM 32-bit (armv7)", listOf("arm", "armv7", "armhf", "cortex-a7", "cortex-a9")),
     AARCH64("ARM 64-bit (arm64/aarch64)", listOf("aarch64", "arm64", "cortex-a53", "cortex-a55")),

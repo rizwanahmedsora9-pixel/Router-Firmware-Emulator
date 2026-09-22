@@ -44,6 +44,7 @@ object FirmwareIdentifier {
         Magic(byteArrayOf(0x2A, 0x23, 0x24, 0x5E), ImageFormat.NETGEAR_CHK, "Netgear CHK"),
         Magic("SHRS".toByteArray(Charsets.ISO_8859_1), ImageFormat.DLINK_SHR, "D-Link image"),
         Magic(byteArrayOf(0x01, 0x00, 0x00, 0x00), ImageFormat.TPLINK_BIN, "TP-Link firmware header", atZeroOnly = true),
+        Magic("IMG0".toByteArray(Charsets.ISO_8859_1), ImageFormat.TPLINK_IMG0, "TP-Link IMG0 / VxWorks header"),
         Magic("PK\u0003\u0004".toByteArray(Charsets.ISO_8859_1), ImageFormat.ZIP, "ZIP archive"),
         Magic(byteArrayOf(0x7F, 0x45, 0x4C, 0x46), ImageFormat.ELF, "ELF binary"),
         Magic("070701".toByteArray(Charsets.ISO_8859_1), ImageFormat.CPIO, "cpio newc archive", atZeroOnly = true),
@@ -65,6 +66,7 @@ object FirmwareIdentifier {
 
     private val MODEL_REGEXES = listOf(
         Regex("""\b(Archer\s?[A-Z]{1,3}\d{2,4}[A-Z]?(?:\s?V\d)?)\b"""),
+        Regex("""\b((?:TL[-_ ]?)?WR\d{3,4}N(?:D)?(?:[-_ ]?V\d+(?:\.\d+)?)?)\b""", RegexOption.IGNORE_CASE),
         Regex("""\b(TL-[A-Z]{2}\d{3,4}[A-Z]?(?:\s?V\d+(?:\.\d+)?)?)\b"""),
         Regex("""\b(TL-WR\d{3,4}N(?:D)?(?:\s?V\d+)?)\b"""),
         Regex("""\b(R(?:6|7|8|9)\d{3,4}(?:v\d)?)\b"""),
@@ -115,6 +117,7 @@ object FirmwareIdentifier {
             }
             ImageFormat.NETGEAR_CHK -> parseChk(bytes, layers, evidence)
             ImageFormat.TPLINK_BIN -> parseTpLink(bytes, layers, evidence, archHints)
+            ImageFormat.TPLINK_IMG0 -> parseTpLinkImg0(bytes, fileName, layers, evidence, archHints)
             ImageFormat.SQUASHFS -> {
                 val sb = SquashFsReader(bytes)
                 if (sb.parse()) {
@@ -139,7 +142,12 @@ object FirmwareIdentifier {
         vendor = refineVendorFromStructure(bytes, primary, vendor, evidence)
 
         val model = guessModel(textSample) ?: guessModel(fileName)
-        val version = Strings.findFirst(textSample, VERSION_REGEXES)
+        val version = if (primary == ImageFormat.TPLINK_IMG0) {
+            Regex("VxWorks\\s*([0-9]+(?:\\.[0-9]+)+)", RegexOption.IGNORE_CASE).find(textSample)?.groupValues?.get(1)
+                ?: Strings.findFirst(textSample + "\n" + fileName, VERSION_REGEXES)
+        } else {
+            Strings.findFirst(textSample + "\n" + fileName, VERSION_REGEXES)
+        }
         model?.let { evidence.add("Model string: $it") }
         version?.let { evidence.add("Version string: $it") }
 
@@ -174,6 +182,13 @@ object FirmwareIdentifier {
     /** Returns the detected format and how many bytes the magic consumed. */
     fun detectAt(data: ByteArray, offset: Int, evidence: MutableList<String>? = null): Pair<ImageFormat, Int>? {
         if (offset >= data.size) return null
+        // Older TP-Link VxWorks files (including TL-WR720N v2 stock firmware) have a
+        // 20-byte integrity/prefix block before the real IMG0 header. Treat the whole file as an
+        // IMG0 container instead of reporting it as raw just because the magic is at +0x14.
+        if (offset + 24 <= data.size && Bin.ascii(data, offset + 20, 4) == "IMG0") {
+            evidence?.add("TP-Link IMG0 / VxWorks container at 0x${offset.toString(16)} (IMG0 header at +0x14)")
+            return ImageFormat.TPLINK_IMG0 to 24
+        }
         // tar needs the ustar check rather than a fixed magic
         if (offset + 512 <= data.size && Bin.ascii(data, offset + 257, 5) == "ustar") {
             evidence?.add("tar (ustar) header at 0x${offset.toString(16)}")
@@ -499,6 +514,70 @@ object FirmwareIdentifier {
         layers.add(Layer(ImageFormat.TPLINK_BIN, "TP-Link header (0x0-0x100)", 0, 256, detail = "$hwId $hwRev v$version"))
     }
 
+    private fun parseTpLinkImg0(
+        data: ByteArray,
+        fileName: String,
+        layers: MutableList<Layer>,
+        evidence: MutableList<String>,
+        archHints: MutableSet<String>,
+    ) {
+        val img0Offsets = ArrayList<Int>()
+        var from = 0
+        while (img0Offsets.size < 8) {
+            val idx = Bin.indexOfAscii(data, "IMG0", from)
+            if (idx < 0) break
+            img0Offsets.add(idx)
+            from = idx + 4
+        }
+        if (img0Offsets.isEmpty()) return
+
+        evidence.add("TP-Link IMG0/VxWorks firmware: ${img0Offsets.size} IMG0 header(s) found")
+        for ((i, off) in img0Offsets.withIndex()) {
+            if (off + 0x64 > data.size) continue
+            val length = Bin.u32be(data, off + 4)
+            val version = Bin.u32be(data, off + 8)
+            val parts = Bin.u32be(data, off + 12)
+            val load = Bin.u32be(data, off + 16)
+            val build = Bin.cstr(data, off + 24, 16)
+            val storeSize = if (off + 0x64 <= data.size) Bin.u32be(data, off + 0x60) else 0
+            val prefix = (off - 0x14).coerceAtLeast(0)
+            evidence.add(
+                buildString {
+                    append("IMG0 #${i + 1} header @0x${off.toString(16)}: length ${Hex.humanBytes(length)}, ")
+                    append("version 0x${version.toString(16)}, parts $parts, load 0x${load.toString(16)}")
+                    if (build.isNotBlank()) append(", build '$build'")
+                    if (storeSize > 0) append(", web-store ${Hex.humanBytes(storeSize)}")
+                }
+            )
+            layers.add(
+                Layer(
+                    ImageFormat.TPLINK_IMG0,
+                    "TP-Link IMG0 record #${i + 1}",
+                    prefix.toLong(),
+                    minOf(data.size - prefix, length.toInt().coerceAtLeast(0) + 0x14).toLong(),
+                    detail = "VxWorks IMG0, load 0x${load.toString(16)}",
+                )
+            )
+        }
+
+        val text = sampleStrings(data, minOf(data.size, 2 * 1024 * 1024))
+        Regex("VxWorks\\s*([0-9]+(?:\\.[0-9]+)+)", RegexOption.IGNORE_CASE).find(text)?.let {
+            evidence.add("VxWorks version: ${it.groupValues[1]}")
+        }
+        // The WR720N v2 stock image does not expose a Linux device tree; its model/SoC evidence
+        // lives in the TP-Link filename and in the VxWorks IMG0 layout. Add explicit hints so the
+        // hardware matrix can compare it against the corrected AR9331/2 MB device profile instead
+        // of leaving every row as unknown.
+        val lowName = fileName.lowercase()
+        if (lowName.contains("wr720n") || text.contains("WR720N", true)) {
+            archHints.add("mips")
+            archHints.add("ath79")
+            archHints.add("ar9331")
+            archHints.add("vxworks")
+            evidence.add("WR720N VxWorks stock image hint: Atheros AR9331 / MIPS / TP-Link IMG0")
+        }
+    }
+
     private fun parseUbi(data: ByteArray, layers: MutableList<Layer>, evidence: MutableList<String>, archHints: MutableSet<String>) {
         if (data.size < 64) return
         val version = Bin.u8(data, 4)
@@ -522,6 +601,7 @@ object FirmwareIdentifier {
             text.contains("DD-WRT", true) -> Vendor.DDWRT
             text.contains("ASUSWRT", true) || text.contains("asuswrt", true) -> Vendor.ASUS
             text.contains("Netgear", true) && primary == ImageFormat.NETGEAR_CHK -> Vendor.NETGEAR
+            primary == ImageFormat.TPLINK_IMG0 -> Vendor.TP_LINK
             text.contains("TP-Link", true) && primary == ImageFormat.TPLINK_BIN -> Vendor.TP_LINK
             text.contains("D-Link", true) || text.contains("DLink", true) -> Vendor.DLINK
             text.contains("MikroTik", true) || text.contains("RouterOS", true) -> Vendor.MIKROTIK
@@ -565,7 +645,7 @@ object FirmwareIdentifier {
         // constantly in arbitrary binary data and would flood the layer list with noise.
         val sweepLimit = minOf(limit, 8 * 1024 * 1024)
         val searchEnd = if (limit > sweepLimit) sweepLimit else limit
-        for (m in MAGICS.filter { !it.atZeroOnly && it.format in setOf(ImageFormat.SQUASHFS, ImageFormat.CRAMFS, ImageFormat.NETGEAR_CHK, ImageFormat.TPLINK_BIN, ImageFormat.TRX, ImageFormat.UBOOT_LEGACY) }) {
+        for (m in MAGICS.filter { !it.atZeroOnly && it.format in setOf(ImageFormat.SQUASHFS, ImageFormat.CRAMFS, ImageFormat.NETGEAR_CHK, ImageFormat.TPLINK_BIN, ImageFormat.TPLINK_IMG0, ImageFormat.TRX, ImageFormat.UBOOT_LEGACY) }) {
             if (found >= maxFindings) break
             var from = 0
             var perMagic = 0
@@ -624,9 +704,18 @@ object FirmwareIdentifier {
             val m = r.find(text) ?: continue
             val candidate = if (m.groupValues.size >= 3 && m.groupValues[2].isNotBlank()) m.groupValues[2] else m.value
             val cleaned = candidate.trim().trim(',', ';', '"', '\'')
+            normalizeTpLinkWrModel(cleaned)?.let { return it }
             if (cleaned.length in 3..40 && cleaned.any { it.isDigit() }) return cleaned
         }
         return null
+    }
+
+    private fun normalizeTpLinkWrModel(value: String): String? {
+        val m = Regex("""^(?:TL[-_ ]?)?WR(\d{3,4}N(?:D)?)(?:[-_ ]?V(\d+(?:\.\d+)?))?$""", RegexOption.IGNORE_CASE).find(value)
+            ?: return null
+        val base = "TL-WR${m.groupValues[1].uppercase()}"
+        val rev = m.groupValues.getOrNull(2)?.takeIf { it.isNotBlank() }
+        return if (rev != null) "$base v$rev" else base
     }
 
     private fun computeConfidence(

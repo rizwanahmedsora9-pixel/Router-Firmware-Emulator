@@ -86,7 +86,9 @@ object WebUiLab {
                 ext in setOf("cgi", "lua", "asp", "php", "cgi-bin") ||
                 (ext == "sh" && e.executable)
             val isPage = ext in setOf("html", "htm", "asp", "php", "lua", "js", "json")
-            val isLogin = low.contains("login") || low.contains("auth") || low.contains("signin")
+            val baseName = Text.baseName(low)
+            val isLogin = (baseName.startsWith("login") || low.contains("/login") || low.contains("auth") || low.contains("signin")) &&
+                !baseName.startsWith("changelogin") && !baseName.contains("loginpwd")
             val kind = when {
                 isLogin -> Route.Kind.LOGIN
                 isHandler -> Route.Kind.HANDLER
@@ -275,8 +277,8 @@ object WebUiLab {
                         if (login != null) {
                             redirect(out, login)
                         } else {
-                            val index = inventory.docRoot?.let { "$it/index.html" } ?: ""
-                            if (vfs.isFile(index) || vfs.isFile(inventory.docRoot + "/index.htm")) serveStatic(index, out)
+                            val index = indexFile()
+                            if (index != null) serveStatic(index, out)
                             else serveGenerated(out, "No index page in this image", "The image has no default page; pick a page from the feature list.", 200)
                         }
                     }
@@ -323,6 +325,17 @@ object WebUiLab {
                 } catch (_: Throwable) {
                 }
             }
+        }
+
+        private fun indexFile(): String? {
+            val docRoot = inventory.docRoot ?: return null
+            val names = listOf("index.html", "index.htm", "index.asp", "index.php", "index.lua", "home.html")
+            for (name in names) {
+                val exact = Text.normPath("$docRoot/$name")
+                if (vfs.isFile(exact)) return exact
+                vfs.list(docRoot).firstOrNull { it.name.equals(name, ignoreCase = true) }?.let { return it.path }
+            }
+            return null
         }
 
         /** Maps "/x" to "<docroot>/x" when the image stores its UI under a web root. */

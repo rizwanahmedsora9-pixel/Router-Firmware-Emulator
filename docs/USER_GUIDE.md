@@ -69,14 +69,16 @@ Rows worth understanding:
 * **Static analysis coverage** - how much of the file the engine could actually read. If it says
   "header bytes + size only", none of the content-based rows carry evidence - see the note above.
 
-### 5. Click through the emulated firmware UI
-Tab **Emulator** -> *Start emulated web UI*. FlashGuard serves the firmware's own `www/` pages from
-a loopback-only server inside the app and shows them in a WebView: the login page (the image's own,
-or a modelled one for firmwares that generate it on the server), the real feature pages, the
-modelled CGI endpoints. Sign in with the documented factory defaults - usually `admin` / `admin` -
-and the main page opens exactly like on the router; a wrong password shows the image's own
-"username or password is incorrect" page. This is where "does this firmware actually come up and
-look sane?" becomes tangible. Nothing leaves the phone; the server only listens on `127.0.0.1`.
+### 5. Preview the firmware's own web files (static, read-only)
+Tab **Preview** -> *Start static preview server*. FlashGuard serves the firmware's own `www/`
+files byte-for-byte from a loopback-only server inside the app and shows them in a WebView: the
+image's own pages, exactly as stored - same theme, same fonts, same menus, nothing added. There
+is no login step (a static preview cannot authenticate, and many stock firmwares use a browser
+password popup rather than an HTML form anyway). Pages that need the router's own programs show
+an honest notice instead of invented content, and the file index lists only what the image
+actually ships. If a page looks broken here, that is the truth about the stored template - the
+app will not fake the missing live data. Nothing leaves the phone; the server only listens on
+`127.0.0.1`.
 
 ### 6. Test the router you already have
 Tab **Live test**: enter the router's LAN IP (e.g. `192.168.1.1`). FlashGuard performs a

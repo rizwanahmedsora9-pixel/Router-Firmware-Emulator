@@ -388,12 +388,12 @@ class MainActivity : AppCompatActivity() {
                 toast("Could not start the loopback web server.")
                 return@launch
             }
-            AppLog.i("emu-web", "Server up from dashboard at ${server.baseUrl} (login: ${server.loginUrl})")
-            b.textEmulatorStatus.text = "Running on ${server.baseUrl}\n" +
-                "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login: ${session.inventory.loginPage ?: "modelled by FlashGuard (no static form in image)"}\n" +
-                "Features found: ${session.inventory.features.size} groups, ${session.inventory.routes.size} pages"
+            AppLog.i("emu-web", "Static preview up from dashboard at ${server.baseUrl} (entry: ${server.loginUrl})")
+            b.textEmulatorStatus.text = "Running on ${server.baseUrl} (read-only static preview, no login)\n" +
+                "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login form: ${session.inventory.loginPage ?: "none in this image"}\n" +
+                "Web files: ${session.inventory.routes.size} pages in ${session.inventory.features.size} folders (${session.inventory.handlerCount} need the router program)"
             b.btnOpenEmulatorFull.isEnabled = true
-            toast("Emulated web UI is up (loopback only).")
+            toast("Static preview is up (loopback only, read-only).")
         }
     }
 
@@ -406,8 +406,8 @@ class MainActivity : AppCompatActivity() {
     private fun openEmulator(console: Boolean) {
         val session = LabHolder.session ?: return toast("Run the safety test first.")
         val server = session.startWebUi()
-        if (server.port <= 0) return toast("Could not start the emulated web server.")
-        AppLog.i("emu-web", "Opening emulated UI (console=$console) at ${server.baseUrl}, login URL ${server.loginUrl}")
+        if (server.port <= 0) return toast("Could not start the static preview server.")
+        AppLog.i("emu-web", "Opening static preview (index=$console) at ${server.baseUrl}, entry URL ${server.loginUrl}")
         startActivity(
             Intent(this, EmulatorActivity::class.java).apply {
                 putExtra("console", console)

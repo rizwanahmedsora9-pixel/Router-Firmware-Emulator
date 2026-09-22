@@ -13,8 +13,10 @@ sysupgrade tarball, a gzip/xz/lzma stream, a SquashFS image or a raw flash dump 
    ARM/MIPS binaries are executed, nothing real is written).
 4. **Prove what comes up**: bootloader header → kernel → rootfs → init → services → web UI, plus
    the **login page** the firmware ships.
-5. **Serve that web UI** from a loopback-only server inside the app so you can click through the
-   login page and the feature pages (in a WebView) before flashing anything.
+5. **Serve those web files byte-for-byte** from a read-only loopback-only server inside the app
+   so you can preview the firmware's own pages (in a WebView) before flashing anything. No login
+   is faked, no data is invented: pages that need the router's own programs show an honest
+   notice instead.
 6. **Score every feature against your exact router model** and mark hardware-incompatible parts in
    **red** - the CPU family, flash type/size, bootloader, Wi-Fi chipset, RAM, device tree and
    signature rules that turn a wrong image into a brick.
@@ -52,7 +54,7 @@ network use is the optional read-only check against your own router on the LAN.
    * *could not verify* = nothing inside the file could be unpacked (raw/vendor-encrypted blob),
      so there is no evidence either way. That is reported as its own verdict, **not** as a hardware
      mismatch - the next steps tell you how to find out what the file actually is.
-5. Tab **Emulator** → *Open the emulated login page* to click through the firmware's own UI.
+5. Tab **Preview** → browse the firmware's own web files exactly as stored (read-only, no login).
 6. Tab **Live test** → test the router you already have (before/after flashing) - read-only.
 7. Tab **Report** → share or copy the full Markdown/JSON report.
 

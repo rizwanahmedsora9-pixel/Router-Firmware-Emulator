@@ -86,7 +86,7 @@ class LabSession(
     private var server: WebUiLab.Server? = null
     var probeResult: ProbeResult? = null
 
-    /** Serves the image's own web UI (or the modelled equivalent) on loopback for the WebView. */
+    /** Serves the image's own web files byte-for-byte on loopback for the WebView (read-only static preview, no login). */
     fun startWebUi(defaultUser: String = "admin", defaultPass: String = "admin"): WebUiLab.Server {
         stopWebUi()
         val s = WebUiLab.Server(unpack.vfs, inventory, facts, defaultUser to defaultPass)
@@ -105,8 +105,8 @@ class LabSession(
     }
 
     /**
-     * App-level sink for emulator web-server events (started/stopped, login attempts).
-     * Set by the app so the full run log also covers the emulated UI.
+     * App-level sink for static-preview web-server events (started/stopped).
+     * Set by the app so the full run log also covers the preview server.
      */
     var webUiEventSink: ((String) -> Unit)? = null
         set(value) {
@@ -129,12 +129,12 @@ class LabSession(
         append(" | ").append(report.verdict.display)
     }
 
-    /** Current state of the emulated web server as report lines (empty when never started). */
+    /** Current state of the static-preview web server as report lines (empty when never started). */
     fun webServerStatusLines(): List<String> {
         val s = server ?: return emptyList()
         return buildList {
-            add(if (s.port > 0) "Running: http://127.0.0.1:${s.port}/  (logged in: ${s.loggedIn}, ${s.requestCount.get()} request(s) served)" else "Started but not listening")
-            add("Login URL: ${s.loginUrl}")
+            add(if (s.port > 0) "Running: http://127.0.0.1:${s.port}/  (static preview, read-only, ${s.requestCount.get()} request(s) served)" else "Started but not listening")
+            add("Entry URL: ${s.loginUrl}")
             val reqs = s.requestLogSnapshot()
             if (reqs.isEmpty()) add("No requests served yet.")
             else {

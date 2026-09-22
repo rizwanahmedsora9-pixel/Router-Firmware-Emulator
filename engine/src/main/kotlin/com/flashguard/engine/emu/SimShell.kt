@@ -341,7 +341,7 @@ class SimShell(
                     if (r.output.isNotEmpty()) ctx.emit(r.output)
                 } else {
                     val binaryName = Text.baseName(resolved)
-                    logLine("[exec] $binaryName ${argv.drop(1).joinToString(" ")} (native binary - modelled)".trim())
+                    logLine("[exec] $binaryName ${argv.drop(1).joinToString(" ")} (native binary - simulated, not executed)".trim())
                     val invoked = listOf(binaryName) + argv.drop(1)
                     val (out2, code2) = Commands.run(binaryName, invoked, ctx.stdin, this, ctx)
                     ctx.exitCode = code2

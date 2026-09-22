@@ -129,8 +129,12 @@ object Report {
             sb.append("  \"webUi\": {\n")
             sb.append("    \"docRoot\": ${q(inv.docRoot ?: "")},\n")
             sb.append("    \"loginPage\": ${q(inv.loginPage ?: "")},\n")
+            sb.append("    \"hasLoginForm\": ${inv.hasLoginForm},\n")
             sb.append("    \"loginFormFields\": ${arr(inv.loginFormFields)},\n")
             sb.append("    \"serverBinaries\": ${arr(inv.serverBinaries)},\n")
+            sb.append("    \"pageCount\": ${inv.routes.size},\n")
+            sb.append("    \"staticFiles\": ${inv.staticCount},\n")
+            sb.append("    \"handlers\": ${inv.handlerCount},\n")
             sb.append("    \"featureCount\": ${inv.features.size},\n")
             sb.append("    \"features\": [\n")
             inv.features.entries.forEachIndexed { i, (name, routes) ->
@@ -259,7 +263,8 @@ object Report {
         }
 
         inventory?.let { inv ->
-            sb.append("## Features in the web UI (${inv.features.size} groups, ${inv.routes.size} pages)\n\n")
+            sb.append("## Web files in the image (${inv.routes.size} pages in ${inv.features.size} real folders)\n\n")
+            sb.append("_Folders below are the image's real directories - not feature claims. Login: ${inv.loginPage ?: "no HTML login form in this image"}._\n\n")
             for ((name, routes) in inv.features) {
                 sb.append("- **$name** (${routes.size}): ").append(routes.take(5).joinToString(", ") { "`${it.path}`" }).append('\n')
             }

@@ -573,59 +573,74 @@ fun main(args: Array<String>) {
         r.expect(md.contains("Next steps"), "markdown missing next steps")
     }
 
-    r.check("web UI emulator serves the image's login page on loopback") {
+    r.check("static preview serves the image's own bytes on loopback, unmodified") {
         val device = DeviceDb.byId("tplink-archer-c6-v2")!!
         val session = FirmwareLab.analyze(gzTar, "openwrt-test.tar.gz", device)
         val server = session.startWebUi()
         try {
             r.expect(server.port > 0, "server did not start")
+            // Entry page is the image's own login form.
+            r.expect(server.loginUrl == "/login.html", "unexpected entry URL ${server.loginUrl}")
             val rootResp = httpGet("http://127.0.0.1:${server.port}/")
-            r.expect(rootResp.first in 200..399, "root returned ${rootResp.first}")
+            r.expect(rootResp.first == 200, "root returned ${rootResp.first}, expected the raw index page")
+            r.expect(rootResp.second.contains("System status"), "index page not served byte-for-byte")
+            // The login form is served raw: real fields present, nothing injected into it.
+            val rawLogin = session.unpack.vfs.readText("/www/login.html", 65536) ?: ""
             val loginHtml = httpGet("http://127.0.0.1:${server.port}/login.html").second
-            r.expect(loginHtml.contains("flashguard-banner"), "emulation banner missing")
             r.expect(loginHtml.contains("password"), "login form not served")
+            r.expect(loginHtml.contains("luci_username"), "login fields changed: $loginHtml")
+            r.expect(loginHtml == rawLogin, "served login page differs from the stored bytes (injection?)")
+            r.expect(!loginHtml.contains("flashguard", true), "preview marker leaked into firmware bytes")
+            // Status endpoint is honest about the mode.
             val status = httpGet("http://127.0.0.1:${server.port}/__flashguard/status").second
             r.expect(status.contains("\"emulated\":true"), "status endpoint broken: $status")
-            r.expect(status.contains("\"loginModelled\":false"), "status should report a real login page here: $status")
-            val console = httpGet("http://127.0.0.1:${server.port}/__flashguard/console").second
-            r.expect(console.contains("Wi-Fi") || console.contains("feature"), "console does not list features")
+            r.expect(status.contains("\"hasLoginForm\":true"), "status should report the real login form: $status")
+            r.expect(status.contains("\"loginModelled\":false"), "nothing may be modelled: $status")
+            r.expect(status.contains("static-preview"), "status does not declare static-preview mode: $status")
+            // The file index lists REAL files/folders - never invented feature categories.
+            val index = httpGet("http://127.0.0.1:${server.port}/__flashguard/index").second
+            r.expect(index.contains("Static file index"), "file index missing")
+            r.expect(index.contains("login.html"), "file index does not list the real files")
+            r.expect(!index.contains("VoIP") && !index.contains("Load balance"), "index invents feature categories")
+            // Handler URLs show an honest notice (never a faked response) with a raw-bytes view.
+            val luci = httpGet("http://127.0.0.1:${server.port}/cgi-bin/luci")
+            r.expect(luci.first == 200 && luci.second.contains("needs the router itself"), "handler notice missing (code ${luci.first})")
+            r.expect(!luci.second.contains("modelled response"), "handler response is faked: ${luci.second.take(200)}")
+            val raw = httpGet("http://127.0.0.1:${server.port}/__flashguard/raw?path=/www/cgi-bin/luci").second
+            r.expect(raw.contains("LuCI dispatcher"), "raw view does not show the stored bytes: $raw")
             session.stopWebUi()
         } finally {
             session.stopWebUi()
         }
     }
 
-    r.check("login flow: UI is gated, wrong credentials fail, correct ones open the main page") {
+    r.check("static preview: no login gate, forms are never executed") {
         val device = DeviceDb.byId("tplink-archer-c6-v2")!!
         val session = FirmwareLab.analyze(gzTar, "openwrt-test.tar.gz", device)
         val server = session.startWebUi()
         try {
             val base = "http://127.0.0.1:${server.port}"
-            r.expect(server.loginUrl == "/login.html", "unexpected login URL ${server.loginUrl}")
-            // Unauthenticated: every UI page redirects to the login page, like the real device.
-            r.expect(httpGet("$base/").first == 302, "root was served without login")
-            r.expect(httpHeader("$base/", "Location") == server.loginUrl, "root redirect target wrong")
-            r.expect(httpGet("$base/index.html").first == 302, "index page was served without login")
-            // Wrong credentials: an error page, and the gate stays closed.
-            val (badCode, badBody) = httpPost("$base/cgi-bin/luci", "luci_username=admin&luci_password=wrong")
-            r.expect(badCode == 200 && badBody.contains("ncorrect", true), "wrong credentials did not produce the error page (code $badCode)")
-            r.expect(!server.loggedIn, "server logged in despite wrong credentials")
-            r.expect(httpGet("$base/").first == 302, "gate stayed open after failed login")
-            // Correct factory defaults: redirect to the main page, which then loads.
-            val (okCode, okBody) = httpPost("$base/cgi-bin/luci", "luci_username=admin&luci_password=admin")
-            r.expect(okCode == 302, "successful login did not redirect (got $okCode)")
-            r.expect(okBody.contains("<!--Location: /-->"), "successful login must land on / (got $okBody)")
-            r.expect(server.loggedIn, "login flag not set after correct credentials")
-            val main = httpGet("$base/")
-            r.expect(main.first == 200 && main.second.contains("System status"), "main page did not open after login")
-            // Logging out closes the gate again.
-            r.expect(httpGet("$base/__flashguard/logout").first == 302 && !server.loggedIn, "logout did not reset the session")
+            r.expect(server.loginUrl == "/login.html", "unexpected entry URL ${server.loginUrl}")
+            // No authentication exists in static preview: pages are browsable read-only.
+            r.expect(httpGet("$base/").first == 200, "root must be served without any login step")
+            r.expect(httpGet("$base/index.html").first == 200, "index must be served without any login step")
+            r.expect(!server.loggedIn, "static preview must never report a login")
+            // Form submissions are rejected honestly - the handler binary cannot run here.
+            val (postCode, postBody) = httpPost("$base/cgi-bin/luci", "luci_username=admin&luci_password=admin")
+            r.expect(postCode == 501, "form POST must be rejected honestly, got $postCode")
+            r.expect(postBody.contains("cannot be submitted"), "POST notice missing: ${postBody.take(200)}")
+            r.expect(!server.loggedIn, "a form POST must never log anyone in")
+            // Legacy endpoints redirect to the honest entry points instead of invented pages.
+            r.expect(httpGet("$base/__flashguard/login").first == 302, "legacy login path must redirect")
+            r.expect(httpHeader("$base/__flashguard/login", "Location") == server.loginUrl, "legacy login redirect target wrong")
+            r.expect(httpHeader("$base/__flashguard/console", "Location") == "/__flashguard/index", "legacy console must redirect to the file index")
+            r.expect(httpGet("$base/__flashguard/logout").first == 302 && !server.loggedIn, "logout must stay a no-op redirect")
         } finally {
             session.stopWebUi()
         }
     }
 
-    r.check("modelled login page for images without a static login form (VxWorks-style store)") {
+    r.check("honest preview for images without a static login form (VxWorks-style store)") {
         val vfs = VirtualFs()
         vfs.addFile("/www/Index.htm", "<html><title>TP-LINK</title><FRAMESET rows=92,*><FRAME src=\"/userRpm/StatusRpm.htm\"></FRAMESET></html>".toByteArray())
         vfs.addFile(
@@ -639,28 +654,31 @@ fun main(args: Array<String>) {
         val facts = com.flashguard.engine.core.FirmwareFacts(deviceModelHint = "TL-WR720N v2")
         val inv = com.flashguard.engine.emu.WebUiLab.inventory(vfs, facts)
         r.expect(inv.loginPage == null, "the auth-error page was picked as the login page")
-        r.expect(inv.loginModelled, "modelled login flag not set")
+        r.expect(!inv.hasLoginForm, "hasLoginForm must be false without a real form")
+        r.expect(!inv.loginModelled, "nothing may be modelled - ever")
         val server = com.flashguard.engine.emu.WebUiLab.Server(vfs, inv, facts)
-        r.expect(server.start(), "modelled-login server did not start")
+        r.expect(server.start(), "preview server did not start")
         try {
             val base = "http://127.0.0.1:${server.port}"
-            r.expect(server.loginUrl == com.flashguard.engine.emu.WebUiLab.MODELLED_LOGIN_PATH, "modelled login URL wrong: ${server.loginUrl}")
-            r.expect(httpGet("$base/").first == 302 && httpHeader("$base/", "Location") == server.loginUrl, "root did not redirect to the modelled login")
-            val login = httpGet("$base/__flashguard/login").second
-            r.expect(login.contains("type=\"password\""), "modelled login page has no password field")
-            r.expect(login.contains("flashguard-banner"), "banner missing on the modelled login page")
-            // Wrong credentials show the image's own AuthError page, not a generic one.
-            val (badCode, badBody) = httpPost("$base/__flashguard/login", "username=admin&password=nope")
-            r.expect(badCode == 200 && badBody.contains("Username or Password is incorrect"), "the image's auth-error page was not shown (code $badCode)")
-            // Correct factory defaults open the main page.
-            r.expect(httpPost("$base/__flashguard/login", "username=admin&password=admin").first == 302, "modelled login did not redirect on success")
+            // No invented login form: the entry point is the honest file index.
+            r.expect(server.loginUrl == com.flashguard.engine.emu.WebUiLab.INDEX_PATH, "entry URL wrong: ${server.loginUrl}")
+            // The image's own start page is served raw - no redirect, no injected data.
             val main = httpGet("$base/")
-            r.expect(main.first == 200 && main.second.contains("FRAMESET"), "main page did not open after modelled login")
-            // The flattened web store still resolves /userRpm/StatusRpm.htm, with modelled data injected.
+            r.expect(main.first == 200 && main.second.contains("FRAMESET"), "start page not served raw (code ${main.first})")
+            r.expect(!main.second.contains("flashguard", true), "preview marker leaked into firmware bytes")
+            // The flattened web store still resolves /userRpm/StatusRpm.htm to the REAL bytes,
+            // with NO invented values injected (no fake LAN IP, no fake arrays).
             val statusPage = httpGet("$base/userRpm/StatusRpm.htm")
             r.expect(statusPage.first == 200, "flattened-store alias failed for /userRpm/StatusRpm.htm")
-            r.expect(statusPage.second.contains("var lanPara=new Array"), "modelled data missing on the status page")
-            r.expect(statusPage.second.contains("192.168.0.1"), "modelled LAN IP missing on the status page")
+            r.expect(statusPage.second.contains("lanPara[1]"), "status template not served raw")
+            r.expect(!statusPage.second.contains("var lanPara=new Array"), "INVENTED data injected into the status page")
+            r.expect(!statusPage.second.contains("192.168.0.1"), "INVENTED LAN IP injected into the status page")
+            // The auth-error page is just another static file - served raw on its real URL.
+            val auth = httpGet("$base/AuthError.htm")
+            r.expect(auth.first == 200 && auth.second.contains("Username or Password is incorrect"), "auth-error page not served raw")
+            // The file index lists the real files.
+            val index = httpGet("$base/__flashguard/index").second
+            r.expect(index.contains("StatusRpm.htm") && index.contains("Index.htm"), "file index missing the real files")
         } finally {
             server.stop()
         }
@@ -672,7 +690,7 @@ fun main(args: Array<String>) {
         val text = session.diagnosticsText()
         for (marker in listOf(
             "FlashGuard FULL DIAGNOSTICS", "VERDICT", "BOOT CHAIN", "FULL BOOT LOG",
-            "EMULATION DETAILS", "WEB UI IN IMAGE", "EMULATED WEB SERVER", "EXTRACTION / UNPACK",
+            "EMULATION DETAILS", "WEB UI IN IMAGE", "STATIC PREVIEW WEB SERVER", "EXTRACTION / UNPACK",
             "HOW THE FILE WAS IDENTIFIED", "FIRMWARE FACTS", "HARDWARE COMPATIBILITY MATRIX",
             "SECURITY / QUALITY FINDINGS", "WATCHDOG: LIVE ROUTER CHECK", session.identity.sha256,
         )) {
@@ -721,7 +739,7 @@ fun main(args: Array<String>) {
         r.expect(session.emulation.loginPage != null, "demo has no login page")
         r.expect(session.report.features.any { it.verdict.isRed }.not() || true, "matrix produced rows")
         println("       demo: services=" + session.emulation.services.joinToString(",") { it.name } +
-            " features=" + session.inventory.featureNames().take(5).joinToString("/"))
+            " webfolders=" + session.inventory.featureNames().take(5).joinToString("/"))
     }
 
     r.check("matrix red-flags a demo image on a NAND/CFE device") {
@@ -743,7 +761,7 @@ fun main(args: Array<String>) {
             println("       rootfs=${session.unpack.vfs.fileCount} objects, distro=${session.facts.distro} target=${session.facts.target}")
             println("       stages=" + session.emulation.stages.joinToString(", ") { "${it.name}:${if (it.ok) "ok" else "no"}" })
             println("       verdict=${session.report.verdict.display} score=${session.report.riskScore} redflags=${session.report.redFlags().size}")
-            println("       webfeatures=" + session.inventory.featureNames().take(8).joinToString(", "))
+            println("       webfolders=" + session.inventory.featureNames().take(8).joinToString(", "))
             r.expect(session.identity.primary != ImageFormat.EMPTY, "image could not be identified at all")
             r.expect(session.identity.totalSize == bytes.size.toLong(), "size mismatch")
             r.expect(session.jsonReport().trim().endsWith("}"), "JSON report malformed for ${file.name}")

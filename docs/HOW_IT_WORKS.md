@@ -64,26 +64,37 @@ Output: a stage-by-stage boot chain (header -> kernel -> rootfs -> init -> servi
 a boot log, the list of services with the ports they bind, created files, interfaces, variables,
 and honest notes about anything that could not be simulated.
 
-## 4. Serve the emulated web UI
+## 4. Serve the static web preview
 
 `WebUiLab` inventories the image's `www/` tree: pages, CGI handlers, login forms (field names and
-action URLs are parsed), feature groups (System, Wi-Fi, VPN, USB, ...) and the doc root. It can
-then serve those pages over **loopback only** (`127.0.0.1`, random port) with a small banner, and
-model the firmware's own CGI responses (`status`, `login`, `console`). The Android WebView loads
-that loopback URL, so you can click through the firmware's UI exactly as it ships - offline.
+action URLs are parsed), the real folders and the doc root. It can then serve those files
+**byte-for-byte** over **loopback only** (`127.0.0.1`, random port). The Android WebView loads
+that loopback URL, so you can click through the firmware's files exactly as they ship - offline.
 
-The login works like the real device: every UI page redirects to the login page until the
-documented factory defaults (`admin` / `admin`) are submitted; a wrong password shows the image's
-own auth-error page (e.g. TP-Link's `AuthError.htm`), a correct one opens the real main page
-(frameset, menu, status). A page only counts as the login page if it actually contains a login
-form with a password input - pages that merely mention "password" (error/troubleshooting pages)
-are never mistaken for it. Some images ship *no* static login form at all: their HTTP server
-generates one (TP-Link VxWorks builds do this). For those, FlashGuard serves a **modelled login
-page** at `/__flashguard/login` and validates against the factory defaults, then lands on the
-image's real pages. Pages flattened into a single web-store directory still resolve under the
-paths the templates reference (`/userRpm/...`, `/frames/...`, `/images/...`), and the runtime
-data the original CGI would append to status/menu templates (`*Para` arrays, `visibleMenuList`)
-is injected as clearly-labelled modelled values so the pages render like the real device.
+Anti-faking rules (non-negotiable):
+
+* **No invented pages.** Static files are served with zero modifications: no banner injected into
+  the HTML, no colours/fonts/menus changed. What you see is what the firmware ships.
+* **No login emulation.** Many stock firmwares (e.g. TP-Link VxWorks) use an HTTP Basic Auth
+  browser popup, not an HTML form - inventing a login form would show a theme the real router
+  never had. Preview therefore browses read-only past any login and says so. A page only counts
+  as the login page if it actually contains a login form with a password input - pages that
+  merely mention "password" (error/troubleshooting pages like `AuthError.htm`) are never
+  mistaken for it.
+* **No invented data.** Status templates that need live router values show their stored template
+  as-is (blank where the live data would go). FlashGuard never injects fake IPs, MACs, SSIDs or
+  menu lists to make a page "look alive".
+* **No invented menus.** There is no "feature console" with made-up categories (VPN/IPv6/VoIP...).
+  The index (`/__flashguard/index`) is a plain listing of the REAL files and folders found.
+* **Honest handler notices.** URLs produced on the real router by a native program show a
+  clearly-labelled notice ("this page needs the router itself") with a link to view the stored
+  file's raw bytes - never a faked response. Form POSTs are rejected with an explanation: the
+  receiving binary cannot run on a phone, so nothing is submitted.
+
+Pages flattened into a single web-store directory still resolve under the paths the templates
+reference (`/userRpm/...`, `/frames/...`, `/images/...`) - but only to the image's own real
+bytes, and only when the match is unambiguous. Ambiguous names show a 404 that explains instead
+of guessing.
 
 ## 5. Compare against your hardware
 

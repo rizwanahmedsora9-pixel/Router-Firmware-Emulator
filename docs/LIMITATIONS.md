@@ -38,6 +38,11 @@ security. Read this before trusting a green verdict.
   manually, as the row's guidance says.
 * **The live test is read-only by design.** It cannot and will not flash, reboot or reset anything.
   Flashing is done by the vendor/OpenWrt upgrade page or recovery mode, at your own risk.
+* **The web preview is static, not a live router.** It shows the firmware's stored files exactly
+  as shipped. It cannot log in (many stock firmwares use a browser password popup, not a form),
+  cannot run the router's native programs, and cannot fill in live values (status numbers, menus
+  built at runtime). Such pages show a notice or their raw template - deliberately, so the app
+  never shows a theme, menu or option the real router does not have.
 
 ## Safety guarantees
 

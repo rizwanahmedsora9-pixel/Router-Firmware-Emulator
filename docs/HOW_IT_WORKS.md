@@ -69,8 +69,12 @@ and honest notes about anything that could not be simulated.
 `WebUiLab` inventories the image's `www/` tree: pages, CGI handlers, login forms (field names and
 action URLs are parsed), feature groups (System, Wi-Fi, VPN, USB, ...) and the doc root. It can
 then serve those pages over **loopback only** (`127.0.0.1`, random port) with a small banner, and
-model the firmware's own CGI responses (`status`, `login`, `console`). The Android WebView loads
-that loopback URL, so you can click through the firmware's UI exactly as it ships - offline.
+model the firmware's own CGI responses (`status`, `login`, `console`). Like a real router, the
+server challenges for the image's documented default credentials first (HTTP Basic Auth, so the
+WebView shows the native username/password popup on boot), and the firmware's own login form -
+when the image ships one - is validated against the same default instead of auto-accepting.
+The Android WebView loads that loopback URL, so you can click through the firmware's UI exactly
+as it ships - offline.
 
 ## 5. Compare against your hardware
 

@@ -52,7 +52,8 @@ network use is the optional read-only check against your own router on the LAN.
    * *could not verify* = nothing inside the file could be unpacked (raw/vendor-encrypted blob),
      so there is no evidence either way. That is reported as its own verdict, **not** as a hardware
      mismatch - the next steps tell you how to find out what the file actually is.
-5. Tab **Emulator** → *Open the emulated login page* to click through the firmware's own UI.
+5. Tab **Emulator** → *Open the emulated login page* to click through the firmware's own UI
+   (the emulated router asks for `admin` / `admin` in a popup first, like the real thing).
 6. Tab **Live test** → test the router you already have (before/after flashing) - read-only.
 7. Tab **Report** → share or copy the full Markdown/JSON report.
 

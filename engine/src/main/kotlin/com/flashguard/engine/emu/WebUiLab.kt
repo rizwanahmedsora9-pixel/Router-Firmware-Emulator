@@ -19,8 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * Honest boundaries (also shown in the UI banner):
  *  - static files (HTML/CSS/JS/images) are served byte-for-byte from the image,
  *  - native CGI binaries cannot execute on Android, so their responses are *modelled*:
- *    a login handler accepts the documented default credentials, then the console lists the
- *    features the image actually ships (derived from its file layout and config),
+ *    the server first challenges for the documented default credentials (HTTP Basic Auth,
+ *    like a real router: the WebView shows the native username/password popup on boot),
+ *    the firmware's own login form is validated against the same default, then the console
+ *    lists the features the image actually ships (derived from its file layout and config),
  *  - nothing is ever written back to the image or to any router.
  */
 object WebUiLab {
@@ -179,22 +181,34 @@ object WebUiLab {
     /**
      * The loopback HTTP server that renders the reconstructed UI.
      * Binds to 127.0.0.1 only: the phone's browser and the app can see it, nothing else.
+     *
+     * Like a real router, every page sits behind an HTTP Basic-Auth login: the first request
+     * gets a 401 + `WWW-Authenticate` challenge, so the WebView (or any browser) shows the
+     * familiar username/password popup. The documented factory default ([defaultCreds],
+     * normally admin/admin) is what unlocks it - anything else keeps getting 401s.
      */
     class Server(
         private val vfs: VirtualFs,
         private val inventory: Inventory,
         private val facts: FirmwareFacts,
         private val defaultCreds: Pair<String, String> = "admin" to "admin",
+        private val requireAuth: Boolean = true,
     ) {
         private var serverSocket: ServerSocket? = null
         private var thread: Thread? = null
         private val running = AtomicBoolean(false)
         val requestCount = AtomicInteger(0)
+        val authFailures = AtomicInteger(0)
         var port: Int = 0
             private set
         val requestLog = ArrayList<String>()
         var loggedIn = false
             private set
+        /** Last username that passed the login challenge (null until the first success). */
+        var authUser: String? = null
+            private set
+        /** The `WWW-Authenticate` realm shown in the login popup - router-style, e.g. "TP-LINK Wireless Router". */
+        val realm: String = authRealm()
 
         val baseUrl: String get() = "http://127.0.0.1:$port/"
 
@@ -246,6 +260,7 @@ object WebUiLab {
                 var contentLength = 0
                 var cookie = ""
                 var host = ""
+                var authorization = ""
                 while (true) {
                     val line = reader.readLine() ?: break
                     if (line.isEmpty()) break
@@ -253,6 +268,7 @@ object WebUiLab {
                         line.startsWith("Content-Length:", true) -> contentLength = line.substringAfter(':').trim().toIntOrNull() ?: 0
                         line.startsWith("Cookie:", true) -> cookie = line.substringAfter(':').trim()
                         line.startsWith("Host:", true) -> host = line.substringAfter(':').trim()
+                        line.startsWith("Authorization:", true) -> authorization = line.substringAfter(':').trim().take(512)
                     }
                 }
                 var body = ""
@@ -270,8 +286,26 @@ object WebUiLab {
                 if (requestLog.size < 300) requestLog.add("$method $path${if (query.isNotEmpty()) "?$query" else ""}")
 
                 val out = socket.getOutputStream()
+                // Router-style login gate: no (valid) credentials -> 401 challenge -> the
+                // browser/WebView shows its native username/password popup, exactly like a
+                // real router does on first contact.
+                val loginUser = checkAuth(authorization)
+                if (requireAuth && loginUser == null) {
+                    if (authorization.isNotBlank()) authFailures.incrementAndGet()
+                    if (requestLog.isNotEmpty() && requestLog.size < 300) {
+                        requestLog[requestLog.lastIndex] = requestLog.last() + " -> 401"
+                    }
+                    unauthorized(out)
+                    out.flush()
+                    socket.close()
+                    return
+                }
+                if (loginUser != null) {
+                    loggedIn = true
+                    authUser = loginUser
+                }
                 when {
-                    path.startsWith("/__flashguard/") -> handleInternal(path, method, query, body, out)
+                    path.startsWith("/__flashguard/") -> handleInternal(path, method, query, body, out, loginUser)
                     path == "/" -> {
                         val login = inventory.loginPage
                         if (login != null) {
@@ -288,27 +322,24 @@ object WebUiLab {
                         val entry = if (alias != null) vfs.get(alias) else vfs.get(path)
                         val serving = alias ?: path
                         if (alias != null && serving != path) {
-                            if (!looksStatic(serving) && vfs.isFile(serving)) {
-                                // still a static asset inside the doc root
-                                serveStatic(serving, out); out.flush(); socket.close(); return
-                            }
                             if (looksStatic(serving)) {
-                                serveStatic(serving, out); out.flush(); socket.close(); return
+                                serveStatic(serving, out, method, query, body); out.flush(); socket.close(); return
+                            }
+                            if (vfs.isFile(serving)) {
+                                // Non-static object inside the doc root (CGI / script / handler):
+                                // native code cannot run here, so model the response instead of
+                                // leaking the raw script bytes.
+                                val r = inventory.routes.firstOrNull { it.path.equals(serving, true) }
+                                serveHandler(r, serving, method, query, body, out, loginUser)
+                                out.flush(); socket.close(); return
                             }
                         }
                         if (entry != null && !entry.isDir && looksStatic(serving)) {
-                            serveStatic(serving, out)
+                            serveStatic(serving, out, method, query, body)
                         } else {
                             val route = inventory.routes.firstOrNull { it.path.equals(path, true) }
                             if (route != null && route.kind != Route.Kind.STATIC) {
-                                // Native handler: since binaries cannot run here, respond with the modelled page.
-                                serveGenerated(
-                                    out,
-                                    "${route.title} (modelled response)",
-                                    "This page is produced by a native binary (${Text.baseName(route.path)}) that cannot execute on Android.<br>" +
-                                        "FlashGuard models the response so you can still see the feature, its fields and its layout.",
-                                    200,
-                                )
+                                serveHandler(route, path, method, query, body, out, loginUser)
                             } else if (entry == null) {
                                 serveGenerated(out, "404 - not in this image", "Path <code>${escape(path)}</code> does not exist in the extracted rootfs.", 404)
                             } else {
@@ -351,7 +382,7 @@ object WebUiLab {
             return ext in setOf("html", "htm", "js", "css", "png", "gif", "jpg", "jpeg", "svg", "ico", "txt", "json", "woff", "woff2", "xml")
         }
 
-        private fun handleInternal(path: String, method: String, query: String, body: String, out: OutputStream) {
+        private fun handleInternal(path: String, method: String, query: String, body: String, out: OutputStream, loginUser: String?) {
             when (path) {
                 "/__flashguard/status" -> {
                     val json = buildString {
@@ -359,6 +390,9 @@ object WebUiLab {
                         append("\"emulated\":true,")
                         append("\"requests\":${requestCount.get()},")
                         append("\"loggedIn\":$loggedIn,")
+                        append("\"authRequired\":$requireAuth,")
+                        append("\"authFailures\":${authFailures.get()},")
+                        append("\"realm\":\"${escapeJson(realm)}\",")
                         append("\"docRoot\":\"${escapeJson(inventory.docRoot ?: "")}\",")
                         append("\"loginPage\":\"${escapeJson(inventory.loginPage ?: "")}\",")
                         append("\"features\":[").append(inventory.featureNames().joinToString(",") { "\"${escapeJson(it)}\"" }).append("],")
@@ -368,21 +402,21 @@ object WebUiLab {
                     respond(out, 200, "application/json", json.toByteArray(Charsets.UTF_8))
                 }
                 "/__flashguard/login" -> {
+                    // Reaching this endpoint already means the Basic-Auth challenge was passed.
                     loggedIn = true
                     redirect(out, "/__flashguard/console")
                 }
                 "/__flashguard/console" -> {
-                    val html = consoleHtml(query, body)
+                    val html = consoleHtml(loginUser, query, body)
                     respond(out, 200, "text/html; charset=utf-8", banner(html).toByteArray(Charsets.UTF_8))
                 }
                 else -> respond(out, 404, "text/plain", "unknown internal endpoint".toByteArray())
             }
         }
 
-        private fun consoleHtml(query: String, body: String): String {
-            val user = Regex("username=([^&]*)").find(body)?.groupValues?.get(1)
-                ?: Regex("user=([^&]*)").find(body)?.groupValues?.get(1)
-                ?: Regex("username=([^&]*)").find(query)?.groupValues?.get(1)
+        private fun consoleHtml(loginUser: String?, query: String, body: String): String {
+            val user = loginUser
+                ?: extractFormCreds(body, query).first?.ifBlank { null }
                 ?: defaultCreds.first
             val sb = StringBuilder()
             sb.append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
@@ -395,9 +429,9 @@ object WebUiLab {
             sb.append(".tag{display:inline-block;background:#22303F;border-radius:10px;padding:2px 8px;font-size:11px;margin-right:6px}")
             sb.append("code{background:#1B2430;padding:1px 4px;border-radius:4px;font-size:12px}")
             sb.append("a{color:#7BD4F0}</style></head><body>")
-            sb.append("<header><h1>Login accepted (simulated)</h1>")
+            sb.append("<header><h1>Emulated admin console</h1>")
             sb.append("<div>Signed in as <code>${escape(user)}</code> &middot; the firmware's own auth binary was not executed; ")
-            sb.append("FlashGuard replayed the login so you can inspect what comes next.</div></header><section>")
+            sb.append("FlashGuard checked the documented default credentials so you can inspect what comes next.</div></header><section>")
             sb.append("<p>Below is everything this image ships in its web UI, grouped by feature. ")
             sb.append("Pages served from the image are marked <span class=\"tag\">from image</span>; ")
             sb.append("pages produced by native binaries are marked <span class=\"tag\">modelled</span>.</p>")
@@ -424,7 +458,24 @@ object WebUiLab {
             return sb.toString()
         }
 
-        private fun serveStatic(path: String, out: OutputStream) {
+        private fun serveStatic(path: String, out: OutputStream, method: String = "GET", query: String = "", body: String = "") {
+            // Some firmwares POST the login form back to the login page itself: validate those
+            // credentials like the real httpd would instead of silently ignoring the POST body.
+            if (isLoginEndpoint(path, inventory.routes.firstOrNull { it.path.equals(path, true) })) {
+                when (loginSubmissionVerdict(body, query)) {
+                    true -> {
+                        loggedIn = true
+                        redirect(out, "/__flashguard/console")
+                        return
+                    }
+                    false -> {
+                        authFailures.incrementAndGet()
+                        serveLoginFailed(out, path)
+                        return
+                    }
+                    null -> { /* not a login submission: serve the page normally */ }
+                }
+            }
             val bytes = vfs.read(path) ?: run {
                 respond(out, 404, "text/plain", "not found".toByteArray())
                 return
@@ -436,6 +487,186 @@ object WebUiLab {
             } else {
                 respond(out, 200, mime, bytes)
             }
+        }
+
+        /**
+         * Modelled response for a native handler (CGI binary, Lua/ASP dispatcher ...).
+         * When the request carries login-form fields for a login endpoint, the credentials
+         * are actually checked against the documented default: correct -> admin console,
+         * wrong -> a "login failed" page, just like the real firmware would answer.
+         */
+        private fun serveHandler(
+            route: Route?,
+            path: String,
+            method: String,
+            query: String,
+            body: String,
+            out: OutputStream,
+            loginUser: String?,
+        ) {
+            if (isLoginEndpoint(path, route)) {
+                when (loginSubmissionVerdict(body, query)) {
+                    true -> {
+                        loggedIn = true
+                        redirect(out, "/__flashguard/console")
+                        return
+                    }
+                    false -> {
+                        authFailures.incrementAndGet()
+                        serveLoginFailed(out, inventory.loginPage ?: "/")
+                        return
+                    }
+                    null -> { /* not a login submission: fall through to the modelled page */ }
+                }
+            }
+            val title = (route?.title ?: Text.baseName(path)) + " (modelled response)"
+            val name = route?.let { Text.baseName(it.path) } ?: Text.baseName(path)
+            serveGenerated(
+                out,
+                title,
+                "This page is produced by a native binary (<code>${escape(name)}</code>) that cannot execute on Android.<br>" +
+                    "FlashGuard models the response so you can still see the feature, its fields and its layout." +
+                    (if (loginUser != null) "<br>Signed in as <code>${escape(loginUser)}</code>." else ""),
+                200,
+            )
+        }
+
+        private fun serveLoginFailed(out: OutputStream, backTo: String) {
+            serveGenerated(
+                out,
+                "Login failed",
+                "Wrong username or password (checked by the emulation, nothing was sent anywhere).<br>" +
+                    "Factory default: <code>${escape(defaultCreds.first)}</code> / <code>${escape(defaultCreds.second)}</code>.<br>" +
+                    "<a href=\"${escape(backTo)}\">Back to the login page</a>",
+                200,
+            )
+        }
+
+        // ------------------------------------------------------------ router-style login
+
+        /** Returns the username when [authorization] carries the correct Basic credentials, else null. */
+        private fun checkAuth(authorization: String): String? {
+            if (authorization.isBlank()) return null
+            val prefix = "Basic "
+            if (!authorization.startsWith(prefix, ignoreCase = true)) return null
+            val decoded = try {
+                String(
+                    java.util.Base64.getDecoder().decode(authorization.substring(prefix.length).trim()),
+                    Charsets.ISO_8859_1,
+                )
+            } catch (t: Throwable) {
+                return null
+            }
+            val user = decoded.substringBefore(':')
+            val pass = if (decoded.contains(':')) decoded.substringAfter(':') else ""
+            return if (user == defaultCreds.first && pass == defaultCreds.second) user else null
+        }
+
+        /** The 401 challenge that makes browsers/WebViews show the native login popup. */
+        private fun unauthorized(out: OutputStream) {
+            val html = banner(
+                "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+                    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+                    "<title>401 Authorization required</title>" +
+                    "<style>body{font-family:system-ui,sans-serif;background:#0B1016;color:#E8EEF5;padding:18px}" +
+                    "h1{font-size:17px;color:#7BD4F0}code{background:#1B2430;padding:1px 4px;border-radius:4px}" +
+                    "a{color:#7BD4F0}</style></head><body>" +
+                    "<h1>401 - Authorization required</h1>" +
+                    "<p>This emulated router requires a username and password, just like the real one.</p>" +
+                    "<p>Factory default: <code>${escape(defaultCreds.first)}</code> / <code>${escape(defaultCreds.second)}</code></p>" +
+                    "<p><a href=\"/\">Try again</a></p></body></html>"
+            )
+            respond(
+                out, 401, "text/html; charset=utf-8", html.toByteArray(Charsets.UTF_8),
+                listOf("WWW-Authenticate" to "Basic realm=\"${realm.replace("\"", "")}\""),
+            )
+        }
+
+        /** Router-like realm for the login popup, derived from the image's own branding. */
+        private fun authRealm(): String {
+            val html = inventory.loginPage?.let { vfs.readText(it, 8192)?.lowercase() } ?: ""
+            val hay = "${inventory.title ?: ""} ${facts.distro ?: ""} ${facts.target ?: ""} $html".lowercase()
+            return when {
+                hay.contains("tp-link") || hay.contains("tplink") -> "TP-LINK Wireless Router"
+                hay.contains("netgear") -> "NETGEAR Router"
+                hay.contains("d-link") || hay.contains("dlink") -> "D-Link Router"
+                hay.contains("asus") -> "ASUS Wireless Router"
+                hay.contains("linksys") -> "Linksys Router"
+                hay.contains("xiaomi") || hay.contains("miwifi") || hay.contains("redmi") -> "Xiaomi Router"
+                hay.contains("huawei") -> "HUAWEI Router"
+                hay.contains("zte") -> "ZTE Router"
+                hay.contains("fritz") -> "FRITZ!Box"
+                hay.contains("openwrt") || hay.contains("luci") -> "OpenWrt Router"
+                hay.contains("dd-wrt") || hay.contains("ddwrt") -> "DD-WRT Router"
+                hay.contains("tomato") -> "Tomato Router"
+                hay.contains("gargoyle") -> "Gargoyle Router"
+                inventory.title?.isNotBlank() == true -> inventory.title!!.take(48)
+                else -> "Router"
+            }
+        }
+
+        /** True when the request carries the login form's action or looks like an auth endpoint. */
+        private fun isLoginEndpoint(path: String, route: Route?): Boolean {
+            if (route?.kind == Route.Kind.LOGIN) return true
+            if (inventory.loginPage != null && Text.normPath(path).equals(Text.normPath(inventory.loginPage!!), true)) return true
+            val low = path.lowercase()
+            if (low.contains("login") || low.contains("auth") || low.contains("signin")) return true
+            val action = inventory.loginAction?.lowercase()?.trim()?.trimStart('/') ?: return false
+            if (action.isEmpty()) return false
+            val bare = low.trimStart('/')
+            return bare == action || bare.endsWith("/$action") || action.endsWith("/$bare")
+        }
+
+        private fun hasLoginFields(body: String, query: String): Boolean {
+            val combined = "$body&$query".lowercase()
+            return combined.contains("password") || combined.contains("passwd") ||
+                combined.contains("pwd=") || combined.contains("pwd%") ||
+                combined.contains("pass=") || combined.contains("pass%") ||
+                combined.contains("luci_password")
+        }
+
+        /**
+         * Judges a form submission to a login endpoint: true = default credentials, open the
+         * console; false = recognisable credentials that do NOT match, show "login failed";
+         * null = no recognisable login fields (plain page view, JSON body, settings POST ...),
+         * so no verdict - serve the page normally instead of guessing.
+         */
+        private fun loginSubmissionVerdict(body: String, query: String): Boolean? {
+            if (!hasLoginFields(body, query)) return null
+            val (user, pass) = extractFormCreds(body, query)
+            if (user == null && pass == null) return null
+            if (user != null && user != defaultCreds.first) return false
+            if (pass != null && pass != defaultCreds.second) return false
+            return true
+        }
+
+        /** Pulls the most likely (username, password) pair out of a form submission. */
+        private fun extractFormCreds(body: String, query: String): Pair<String?, String?> {
+            val combined = "$body&$query"
+            val userKeys = listOf(
+                "luci_username", "username", "user_name", "login_name", "admin_name",
+                "auth_user", "authuser", "loginuser", "userid", "user_id", "account",
+                "login", "user", "name",
+            )
+            val passKeys = listOf(
+                "luci_password", "login_password", "admin_password", "auth_pass",
+                "password", "passwd", "pwd", "pass", "psk",
+            )
+            fun find(keys: List<String>): String? {
+                for (k in keys) {
+                    // Anchored on a parameter boundary so "pass" never matches "bypass=1".
+                    val m = Regex("(?:^|[&?;])$k=([^&;]*)", RegexOption.IGNORE_CASE).find(combined) ?: continue
+                    return urlDecode(m.groupValues[1])
+                }
+                return null
+            }
+            return find(userKeys) to find(passKeys)
+        }
+
+        private fun urlDecode(s: String): String = try {
+            java.net.URLDecoder.decode(s.replace("+", "%20"), "UTF-8").trim().take(128)
+        } catch (t: Throwable) {
+            s.trim().take(128)
         }
 
         private fun serveGenerated(out: OutputStream, title: String, bodyHtml: String, status: Int) {
@@ -474,18 +705,27 @@ object WebUiLab {
             out.write((head + body).toByteArray(Charsets.ISO_8859_1))
         }
 
-        private fun respond(out: OutputStream, status: Int, contentType: String, body: ByteArray) {
-            val head = "HTTP/1.1 $status ${statusText(status)}\r\n" +
-                "Content-Type: $contentType\r\n" +
-                "Content-Length: ${body.size}\r\n" +
-                "Cache-Control: no-store\r\n" +
-                "Connection: close\r\n\r\n"
+        private fun respond(
+            out: OutputStream,
+            status: Int,
+            contentType: String,
+            body: ByteArray,
+            extraHeaders: List<Pair<String, String>> = emptyList(),
+        ) {
+            val head = buildString {
+                append("HTTP/1.1 $status ${statusText(status)}\r\n")
+                for ((k, v) in extraHeaders) append("$k: $v\r\n")
+                append("Content-Type: $contentType\r\n")
+                append("Content-Length: ${body.size}\r\n")
+                append("Cache-Control: no-store\r\n")
+                append("Connection: close\r\n\r\n")
+            }
             out.write(head.toByteArray(Charsets.ISO_8859_1))
             out.write(body)
         }
 
         private fun statusText(code: Int): String = when (code) {
-            200 -> "OK"; 302 -> "Found"; 404 -> "Not Found"; 500 -> "Internal Server Error"; else -> "OK"
+            200 -> "OK"; 302 -> "Found"; 401 -> "Unauthorized"; 404 -> "Not Found"; 500 -> "Internal Server Error"; else -> "OK"
         }
 
         private fun mimeOf(path: String): String = when (Text.ext(path)) {

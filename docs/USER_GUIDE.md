@@ -75,6 +75,11 @@ a loopback-only server inside the app and shows them in a WebView: the real logi
 feature pages, the modelled CGI endpoints. This is where "does this firmware actually come up and
 look sane?" becomes tangible. Nothing leaves the phone; the server only listens on `127.0.0.1`.
 
+Like a real router, the emulated UI asks for a username and password first: a native sign-in
+popup appears on boot (factory default `admin` / `admin`). Wrong credentials are rejected and
+the popup comes back; the firmware's own login form, when the image ships one, is validated
+against the same default. Tapping **Login page** logs out and replays the popup on demand.
+
 ### 6. Test the router you already have
 Tab **Live test**: enter the router's LAN IP (e.g. `192.168.1.1`). FlashGuard performs a
 **read-only** check: it fetches the home page a few times to measure stability and latency,

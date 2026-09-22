@@ -336,7 +336,8 @@ class MainActivity : AppCompatActivity() {
 
         // boot log
         b.textBootLog.text = session.emulation.bootLog.joinToString("\n").ifBlank { "No boot log produced." }
-        b.textEmulatorStatus.text = "Ready. Web root: ${session.emulation.webRoot ?: "n/a"}, login page: ${session.emulation.loginPage ?: "not found"}."
+        b.textEmulatorStatus.text = "Ready. Web root: ${session.emulation.webRoot ?: "n/a"}, login page: ${session.emulation.loginPage ?: "not found"}.\n" +
+            "The emulated router asks for admin / admin on boot, like the real one."
         renderReport()
         refreshDeviceUi()
     }
@@ -363,9 +364,10 @@ class MainActivity : AppCompatActivity() {
             }
             b.textEmulatorStatus.text = "Running on ${server.baseUrl}\n" +
                 "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login page: ${session.inventory.loginPage ?: "none"}\n" +
-                "Features found: ${session.inventory.features.size} groups, ${session.inventory.routes.size} pages"
+                "Features found: ${session.inventory.features.size} groups, ${session.inventory.routes.size} pages\n" +
+                "Sign in with admin / admin when the router-style popup appears."
             b.btnOpenEmulatorFull.isEnabled = true
-            toast("Emulated web UI is up (loopback only).")
+            toast("Emulated web UI is up (loopback only) - sign in with admin / admin.")
         }
     }
 

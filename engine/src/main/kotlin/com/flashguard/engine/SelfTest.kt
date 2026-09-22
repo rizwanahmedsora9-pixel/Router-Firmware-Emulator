@@ -577,15 +577,54 @@ fun main(args: Array<String>) {
         val server = session.startWebUi()
         try {
             r.expect(server.port > 0, "server did not start")
-            val rootResp = httpGet("http://127.0.0.1:${server.port}/")
+            val root = "http://127.0.0.1:${server.port}"
+            val creds = "admin" to "admin"
+            val rootResp = httpGet("$root/", creds)
             r.expect(rootResp.first in 200..399, "root returned ${rootResp.first}")
-            val loginHtml = httpGet("http://127.0.0.1:${server.port}/login.html").second
+            val loginHtml = httpGet("$root/login.html", creds).second
             r.expect(loginHtml.contains("flashguard-banner"), "emulation banner missing")
             r.expect(loginHtml.contains("password"), "login form not served")
-            val status = httpGet("http://127.0.0.1:${server.port}/__flashguard/status").second
+            val status = httpGet("$root/__flashguard/status", creds).second
             r.expect(status.contains("\"emulated\":true"), "status endpoint broken: $status")
-            val console = httpGet("http://127.0.0.1:${server.port}/__flashguard/console").second
+            val console = httpGet("$root/__flashguard/console", creds).second
             r.expect(console.contains("Wi-Fi") || console.contains("feature"), "console does not list features")
+            r.expect(console.contains("admin"), "console does not show the signed-in user")
+            session.stopWebUi()
+        } finally {
+            session.stopWebUi()
+        }
+    }
+
+    r.check("web UI emulator asks for the router login like a real router (401 + popup challenge)") {
+        val device = DeviceDb.byId("tplink-archer-c6-v2")!!
+        val session = FirmwareLab.analyze(gzTar, "openwrt-test.tar.gz", device)
+        val server = session.startWebUi()
+        try {
+            r.expect(server.port > 0, "server did not start")
+            val root = "http://127.0.0.1:${server.port}"
+            // First contact without credentials: a 401 challenge, which is what makes the
+            // browser/WebView show its native username/password popup.
+            val anon = httpGet("$root/")
+            r.expect(anon.first == 401, "expected a 401 login challenge, got ${anon.first}")
+            r.expect(anon.second.contains("Authorization required"), "401 page missing the login explanation")
+            val challenge = httpChallenge("$root/")
+            r.expect(challenge != null && challenge.startsWith("Basic"), "missing WWW-Authenticate challenge: $challenge")
+            r.expect(server.realm.isNotBlank(), "login realm is blank")
+            // Wrong credentials keep getting 401s ...
+            val wrong = httpGet("$root/", "admin" to "wrong")
+            r.expect(wrong.first == 401, "wrong password was not rejected (got ${wrong.first})")
+            r.expect(server.authFailures.get() > 0, "failed logins are not counted")
+            r.expect(!session.webUiLoggedIn(), "server reports logged-in before any successful login")
+            // ... and the documented default unlocks the UI.
+            val ok = httpGet("$root/", "admin" to "admin")
+            r.expect(ok.first in 200..399, "correct credentials rejected (got ${ok.first})")
+            r.expect(session.webUiLoggedIn(), "server does not report the successful login")
+            // The firmware's own login form is validated too: correct -> console, wrong -> failure page.
+            val creds = "admin" to "admin"
+            val goodPost = httpPost("$root/cgi-bin/luci", "luci_username=admin&luci_password=admin", creds)
+            r.expect(goodPost.first in 200..399, "login POST returned ${goodPost.first}")
+            val badPost = httpPost("$root/cgi-bin/luci", "luci_username=admin&luci_password=nope", creds)
+            r.expect(badPost.first == 200 && badPost.second.contains("Login failed"), "wrong form password was not rejected")
             session.stopWebUi()
         } finally {
             session.stopWebUi()
@@ -674,13 +713,54 @@ fun main(args: Array<String>) {
 
 // ---------------------------------------------------------------------------- helpers
 
-private fun httpGet(url: String): Pair<Int, String> = try {
+private fun basicAuth(user: String, pass: String): String =
+    "Basic " + java.util.Base64.getEncoder().encodeToString("$user:$pass".toByteArray(Charsets.ISO_8859_1))
+
+private fun httpGet(url: String, auth: Pair<String, String>? = null): Pair<Int, String> = try {
+    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 4000
+        readTimeout = 4000
+        instanceFollowRedirects = false
+        if (auth != null) setRequestProperty("Authorization", basicAuth(auth.first, auth.second))
+    }
+    val status = conn.responseCode
+    val body = (if (status in 200..299) conn.inputStream else conn.errorStream)?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: ""
+    conn.disconnect()
+    status to body
+} catch (t: Throwable) {
+    0 to ""
+}
+
+/** Returns the raw `WWW-Authenticate` challenge header the server sends with its 401s. */
+private fun httpChallenge(url: String): String? = try {
     val conn = (URL(url).openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
         connectTimeout = 4000
         readTimeout = 4000
         instanceFollowRedirects = false
     }
+    conn.responseCode
+    val header = conn.getHeaderField("WWW-Authenticate")
+    conn.disconnect()
+    header
+} catch (t: Throwable) {
+    null
+}
+
+private fun httpPost(url: String, formBody: String, auth: Pair<String, String>? = null): Pair<Int, String> = try {
+    val bytes = formBody.toByteArray(Charsets.UTF_8)
+    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 4000
+        readTimeout = 4000
+        instanceFollowRedirects = false
+        doOutput = true
+        setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+        setRequestProperty("Content-Length", bytes.size.toString())
+        if (auth != null) setRequestProperty("Authorization", basicAuth(auth.first, auth.second))
+    }
+    conn.outputStream.use { it.write(bytes) }
     val status = conn.responseCode
     val body = (if (status in 200..299) conn.inputStream else conn.errorStream)?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: ""
     conn.disconnect()

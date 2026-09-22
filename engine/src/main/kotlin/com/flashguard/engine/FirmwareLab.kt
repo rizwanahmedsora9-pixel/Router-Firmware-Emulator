@@ -85,10 +85,17 @@ class LabSession(
     private var server: WebUiLab.Server? = null
     var probeResult: ProbeResult? = null
 
-    /** Serves the image's own web UI (or the modelled equivalent) on loopback for the WebView. */
-    fun startWebUi(defaultUser: String = "admin", defaultPass: String = "admin"): WebUiLab.Server {
+    /**
+     * Serves the image's own web UI (or the modelled equivalent) on loopback for the WebView.
+     * Like a real router, the server challenges for the default credentials first ([requireAuth]).
+     */
+    fun startWebUi(
+        defaultUser: String = "admin",
+        defaultPass: String = "admin",
+        requireAuth: Boolean = true,
+    ): WebUiLab.Server {
         stopWebUi()
-        val s = WebUiLab.Server(unpack.vfs, inventory, facts, defaultUser to defaultPass)
+        val s = WebUiLab.Server(unpack.vfs, inventory, facts, defaultUser to defaultPass, requireAuth)
         return if (s.start()) {
             server = s
             s
@@ -105,6 +112,9 @@ class LabSession(
     val webUiUrl: String? get() = server?.let { if (it.port > 0) it.baseUrl else null }
 
     val requestsServedByEmulator: Int get() = server?.requestCount?.get() ?: 0
+
+    /** True once at least one request has passed the emulated router login. */
+    fun webUiLoggedIn(): Boolean = server?.loggedIn == true
 
     fun jsonReport(): String = Report.toJson(report, facts, inventory, probeResult)
 

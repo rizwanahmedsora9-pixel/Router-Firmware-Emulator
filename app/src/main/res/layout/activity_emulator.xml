@@ -16,7 +16,7 @@
             android:id="@+id/text_emu_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Emulated firmware web UI"
+            android:text="Firmware web preview (static, read-only)"
             android:textColor="@color/text_primary"
             android:textSize="15sp"
             android:textStyle="bold" />
@@ -40,7 +40,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Login page" />
+                android:text="Entry page" />
 
             <Button
                 android:id="@+id/btn_emu_console"
@@ -48,7 +48,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="6dp"
                 android:layout_weight="1"
-                android:text="Feature console" />
+                android:text="File index" />
 
             <Button
                 android:id="@+id/btn_emu_reload"
@@ -66,7 +66,7 @@
         android:layout_height="wrap_content"
         android:background="@color/brand_primary_container"
         android:padding="8dp"
-        android:text="EMULATION - pages come from the firmware file on this phone. No router is involved and nothing is written anywhere."
+        android:text="STATIC PREVIEW - raw files from the firmware on this phone, shown exactly as stored. No login is performed, dynamic pages show a notice instead of invented content. No router is involved."
         android:textColor="@color/text_primary"
         android:textSize="11sp" />
 

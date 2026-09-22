@@ -105,7 +105,7 @@ object DemoFirmware {
         entries += "www/wifi.html" to "<html><head><title>Wireless</title></head><body>Wi-Fi configuration</body></html>".toByteArray()
         entries += "www/vpn.html" to "<html><head><title>VPN</title></head><body>OpenVPN / WireGuard</body></html>".toByteArray()
         entries += "www/usb.html" to "<html><head><title>USB</title></head><body>USB storage and printer</body></html>".toByteArray()
-        entries += "www/cgi-bin/luci" to "#!/usr/bin/lua\n-- LuCI dispatcher (native, modelled by FlashGuard)\n".toByteArray()
+        entries += "www/cgi-bin/luci" to "#!/usr/bin/lua\n-- LuCI dispatcher (native, not executed in static preview)\n".toByteArray()
 
         entries += "etc/passwd" to "root:x:0:0:root:/root:/bin/ash\ndaemon:*:1:1:daemon:/var:/bin/false\n".toByteArray()
         entries += "etc/shadow" to "root:\$1\$demo\$abcdefghijklmnopqrst:19000:0:99999:7:::\n".toByteArray()
@@ -123,7 +123,7 @@ object DemoFirmware {
         entries += "lib/modules/4.14.241/usb-storage.ko" to ByteArray(512) { 7 }
         entries += "lib/modules/4.14.241/xt_CT.ko" to ByteArray(384) { 11 }
         // ELF-ish placeholder binaries: contain NUL bytes so the engine treats them as
-        // native executables (modelled) instead of trying to parse them as shell scripts.
+        // native executables (simulated as started-services) instead of trying to parse them as shell scripts.
         entries += "usr/sbin/uhttpd" to pseudoElf(8192)
         entries += "usr/sbin/dnsmasq" to pseudoElf(8192)
         entries += "usr/sbin/dropbear" to pseudoElf(8192)

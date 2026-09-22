@@ -126,10 +126,10 @@ class FirmwareEmulator(
             bootLog.add("[webui] login page present: ${web.loginPage}")
             val fields = web.loginFormFields
             if (fields.isNotEmpty()) bootLog.add("[webui] login form fields: ${fields.joinToString(", ")}")
-            bootLog.add("[webui] default credential hint: ${defaultCredHint(web.loginPage)}")
+            bootLog.add("[webui] documented factory default hint: ${defaultCredHint(web.loginPage)} (login is NOT verified - static preview cannot authenticate)")
         } else if (web.routes.isNotEmpty()) {
-            bootLog.add("[webui] no static login form in the image; the emulator serves a modelled login page " +
-                "(factory default: admin / admin, failure shows the image's own auth-error page)")
+            bootLog.add("[webui] no HTML login form in the image (many stock firmwares use a browser password popup instead); " +
+                "static preview browses the extracted pages read-only without any login step")
         } else if (vfs.isDir("/etc/init.d")) {
             notes.add("No login page found: this image may be a kernel-only build, or the UI lives on a JFFS2/UBIFS partition")
         }

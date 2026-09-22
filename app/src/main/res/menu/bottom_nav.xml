@@ -2,7 +2,7 @@
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:id="@+id/tab_analyze" android:icon="@drawable/ic_nav_scan" android:title="Analyze" />
     <item android:id="@+id/tab_device" android:icon="@drawable/ic_nav_device" android:title="My router" />
-    <item android:id="@+id/tab_emulator" android:icon="@drawable/ic_nav_emulator" android:title="Emulator" />
+    <item android:id="@+id/tab_emulator" android:icon="@drawable/ic_nav_emulator" android:title="Preview" />
     <item android:id="@+id/tab_live" android:icon="@drawable/ic_nav_live" android:title="Live test" />
     <item android:id="@+id/tab_report" android:icon="@drawable/ic_nav_report" android:title="Report" />
 </menu>

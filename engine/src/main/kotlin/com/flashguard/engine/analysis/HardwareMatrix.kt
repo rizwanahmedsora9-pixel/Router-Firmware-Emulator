@@ -804,7 +804,7 @@ object HardwareMatrix {
         steps.add("Take a full backup first: SSH into the router and dump every partition (or use the vendor's backup function).")
         steps.add("Confirm the hardware revision on the label matches '${device.display}' before downloading anything else.")
         if (emulation?.reachedWebUi() == true) {
-            steps.add("The image boots to a web UI in emulation - try the login page in the emulator tab to see the UI you will get.")
+            steps.add("The image boots to a web UI in emulation - preview its real pages in the Preview tab to see the UI files you will get (read-only, no login).")
         } else {
             steps.add("Emulation did not reach a web UI: consider testing the image on a spare/SD-boot device, or on a device whose recovery is known.")
         }

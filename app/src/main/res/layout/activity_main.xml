@@ -207,7 +207,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
                         android:enabled="false"
-                        android:text="Open the emulated login page" />
+                        android:text="Preview the firmware web files" />
 
                     <Button
                         android:id="@+id/btn_open_matrix"
@@ -348,7 +348,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Emulated web UI (loopback only)"
+                        android:text="Static web preview (loopback only, read-only)"
                         android:textColor="@color/brand_secondary"
                         android:textSize="13sp"
                         android:textStyle="bold" />
@@ -357,7 +357,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
-                        android:text="FlashGuard serves the image's own web pages (with its own login page) from a tiny server bound to 127.0.0.1 on this phone. Static files come straight out of the firmware; responses from native CGI binaries are modelled. Nothing leaves the device and nothing is written to any router."
+                        android:text="FlashGuard serves the image's own web files byte-for-byte from a tiny read-only server bound to 127.0.0.1 on this phone. No login is performed, nothing is modified, and pages that need the router's own programs show an honest notice instead of invented content. Nothing leaves the device and nothing is written to any router."
                         android:textColor="@color/text_secondary"
                         android:textSize="12sp" />
 
@@ -376,7 +376,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="10dp"
                         android:enabled="false"
-                        android:text="Start emulated web server" />
+                        android:text="Start static preview server" />
 
                     <Button
                         android:id="@+id/btn_open_emulator_full"
@@ -384,7 +384,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="6dp"
                         android:enabled="false"
-                        android:text="Open login page full screen" />
+                        android:text="Open preview full screen" />
 
                     <Button
                         android:id="@+id/btn_stop_emulator"

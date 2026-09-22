@@ -97,21 +97,20 @@ object Diagnostics {
         val inv = session.inventory
         sb.append("WEB UI IN IMAGE\n$RULE\n")
         sb.append("Document root : ${inv.docRoot ?: "none found"}\n")
-        sb.append("Login page    : ${inv.loginPage ?: "none static (FlashGuard serves a modelled login form)"}\n")
-        if (inv.loginModelled) sb.append("Login modelled: yes (the original httpd generates the page; factory default admin/admin)\n")
+        sb.append("Login page    : ${inv.loginPage ?: "none (no HTML login form in this image; static preview needs no login)"}\n")
         sb.append("Login fields  : ${inv.loginFormFields.joinToString(", ").ifBlank { "-" }}\n")
         sb.append("Login action  : ${inv.loginAction ?: "-"}\n")
         inv.title?.let { sb.append("UI title      : $it\n") }
-        if (inv.serverBinaries.isNotEmpty()) sb.append("Server binaries: ${inv.serverBinaries.joinToString(", ")}\n")
-        sb.append("Pages: ${inv.routes.size} in ${inv.features.size} group(s)\n")
+        if (inv.serverBinaries.isNotEmpty()) sb.append("Server binaries: ${inv.serverBinaries.joinToString(", ")} (not executed)\n")
+        sb.append("Web files: ${inv.routes.size} page(s) in ${inv.features.size} real folder(s), ${inv.handlerCount} handler(s) needing the router program\n")
         for ((name, routes) in inv.features) {
             sb.append("  [$name]\n")
-            for (r in routes) sb.append("    ${r.path}\n")
+            for (r in routes) sb.append("    ${r.path} [${r.kind.name.lowercase()}]\n")
         }
         sb.append("\n")
 
         // ------------------------------------------------------------- live emulated server
-        sb.append("EMULATED WEB SERVER (this session)\n$RULE\n")
+        sb.append("STATIC PREVIEW WEB SERVER (this session)\n$RULE\n")
         if (serverLines.isEmpty()) sb.append("(server not started)\n")
         else for (l in serverLines) sb.append(l).append('\n')
         sb.append("\n")

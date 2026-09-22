@@ -71,8 +71,11 @@ Rows worth understanding:
 
 ### 5. Click through the emulated firmware UI
 Tab **Emulator** -> *Start emulated web UI*. FlashGuard serves the firmware's own `www/` pages from
-a loopback-only server inside the app and shows them in a WebView: the real login page, the real
-feature pages, the modelled CGI endpoints. This is where "does this firmware actually come up and
+a loopback-only server inside the app and shows them in a WebView: the login page (the image's own,
+or a modelled one for firmwares that generate it on the server), the real feature pages, the
+modelled CGI endpoints. Sign in with the documented factory defaults - usually `admin` / `admin` -
+and the main page opens exactly like on the router; a wrong password shows the image's own
+"username or password is incorrect" page. This is where "does this firmware actually come up and
 look sane?" becomes tangible. Nothing leaves the phone; the server only listens on `127.0.0.1`.
 
 ### 6. Test the router you already have

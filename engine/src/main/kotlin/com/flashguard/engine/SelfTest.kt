@@ -584,11 +584,83 @@ fun main(args: Array<String>) {
             r.expect(loginHtml.contains("password"), "login form not served")
             val status = httpGet("http://127.0.0.1:${server.port}/__flashguard/status").second
             r.expect(status.contains("\"emulated\":true"), "status endpoint broken: $status")
+            r.expect(status.contains("\"loginModelled\":false"), "status should report a real login page here: $status")
             val console = httpGet("http://127.0.0.1:${server.port}/__flashguard/console").second
             r.expect(console.contains("Wi-Fi") || console.contains("feature"), "console does not list features")
             session.stopWebUi()
         } finally {
             session.stopWebUi()
+        }
+    }
+
+    r.check("login flow: UI is gated, wrong credentials fail, correct ones open the main page") {
+        val device = DeviceDb.byId("tplink-archer-c6-v2")!!
+        val session = FirmwareLab.analyze(gzTar, "openwrt-test.tar.gz", device)
+        val server = session.startWebUi()
+        try {
+            val base = "http://127.0.0.1:${server.port}"
+            r.expect(server.loginUrl == "/login.html", "unexpected login URL ${server.loginUrl}")
+            // Unauthenticated: every UI page redirects to the login page, like the real device.
+            r.expect(httpGet("$base/").first == 302, "root was served without login")
+            r.expect(httpHeader("$base/", "Location") == server.loginUrl, "root redirect target wrong")
+            r.expect(httpGet("$base/index.html").first == 302, "index page was served without login")
+            // Wrong credentials: an error page, and the gate stays closed.
+            val (badCode, badBody) = httpPost("$base/cgi-bin/luci", "luci_username=admin&luci_password=wrong")
+            r.expect(badCode == 200 && badBody.contains("ncorrect", true), "wrong credentials did not produce the error page (code $badCode)")
+            r.expect(!server.loggedIn, "server logged in despite wrong credentials")
+            r.expect(httpGet("$base/").first == 302, "gate stayed open after failed login")
+            // Correct factory defaults: redirect to the main page, which then loads.
+            val (okCode, okBody) = httpPost("$base/cgi-bin/luci", "luci_username=admin&luci_password=admin")
+            r.expect(okCode == 302, "successful login did not redirect (got $okCode)")
+            r.expect(okBody.contains("<!--Location: /-->"), "successful login must land on / (got $okBody)")
+            r.expect(server.loggedIn, "login flag not set after correct credentials")
+            val main = httpGet("$base/")
+            r.expect(main.first == 200 && main.second.contains("System status"), "main page did not open after login")
+            // Logging out closes the gate again.
+            r.expect(httpGet("$base/__flashguard/logout").first == 302 && !server.loggedIn, "logout did not reset the session")
+        } finally {
+            session.stopWebUi()
+        }
+    }
+
+    r.check("modelled login page for images without a static login form (VxWorks-style store)") {
+        val vfs = VirtualFs()
+        vfs.addFile("/www/Index.htm", "<html><title>TP-LINK</title><FRAMESET rows=92,*><FRAME src=\"/userRpm/StatusRpm.htm\"></FRAMESET></html>".toByteArray())
+        vfs.addFile(
+            "/www/StatusRpm.htm",
+            (
+                "<html><head><title>Status</title></head><body><div id=\"lanIP\"></div>" +
+                    "<SCRIPT>document.getElementById(\"lanIP\").innerHTML=lanPara[1];</SCRIPT></body></html>"
+                ).toByteArray(),
+        )
+        vfs.addFile("/www/AuthError.htm", "<html><body><h1>Username or Password is incorrect.</h1></body></html>".toByteArray())
+        val facts = com.flashguard.engine.core.FirmwareFacts(deviceModelHint = "TL-WR720N v2")
+        val inv = com.flashguard.engine.emu.WebUiLab.inventory(vfs, facts)
+        r.expect(inv.loginPage == null, "the auth-error page was picked as the login page")
+        r.expect(inv.loginModelled, "modelled login flag not set")
+        val server = com.flashguard.engine.emu.WebUiLab.Server(vfs, inv, facts)
+        r.expect(server.start(), "modelled-login server did not start")
+        try {
+            val base = "http://127.0.0.1:${server.port}"
+            r.expect(server.loginUrl == com.flashguard.engine.emu.WebUiLab.MODELLED_LOGIN_PATH, "modelled login URL wrong: ${server.loginUrl}")
+            r.expect(httpGet("$base/").first == 302 && httpHeader("$base/", "Location") == server.loginUrl, "root did not redirect to the modelled login")
+            val login = httpGet("$base/__flashguard/login").second
+            r.expect(login.contains("type=\"password\""), "modelled login page has no password field")
+            r.expect(login.contains("flashguard-banner"), "banner missing on the modelled login page")
+            // Wrong credentials show the image's own AuthError page, not a generic one.
+            val (badCode, badBody) = httpPost("$base/__flashguard/login", "username=admin&password=nope")
+            r.expect(badCode == 200 && badBody.contains("Username or Password is incorrect"), "the image's auth-error page was not shown (code $badCode)")
+            // Correct factory defaults open the main page.
+            r.expect(httpPost("$base/__flashguard/login", "username=admin&password=admin").first == 302, "modelled login did not redirect on success")
+            val main = httpGet("$base/")
+            r.expect(main.first == 200 && main.second.contains("FRAMESET"), "main page did not open after modelled login")
+            // The flattened web store still resolves /userRpm/StatusRpm.htm, with modelled data injected.
+            val statusPage = httpGet("$base/userRpm/StatusRpm.htm")
+            r.expect(statusPage.first == 200, "flattened-store alias failed for /userRpm/StatusRpm.htm")
+            r.expect(statusPage.second.contains("var lanPara=new Array"), "modelled data missing on the status page")
+            r.expect(statusPage.second.contains("192.168.0.1"), "modelled LAN IP missing on the status page")
+        } finally {
+            server.stop()
         }
     }
 
@@ -687,6 +759,39 @@ private fun httpGet(url: String): Pair<Int, String> = try {
     status to body
 } catch (t: Throwable) {
     0 to ""
+}
+
+private fun httpPost(url: String, body: String): Pair<Int, String> = try {
+    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        connectTimeout = 4000
+        readTimeout = 4000
+        instanceFollowRedirects = false
+        setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+    }
+    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+    val status = conn.responseCode
+    val location = conn.getHeaderField("Location") ?: ""
+    val text = (if (status in 200..299) conn.inputStream else conn.errorStream)?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: ""
+    conn.disconnect()
+    if (location.isEmpty()) status to text else status to "$text<!--Location: $location-->"
+} catch (t: Throwable) {
+    0 to ""
+}
+
+private fun httpHeader(url: String, header: String): String? = try {
+    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 4000
+        readTimeout = 4000
+        instanceFollowRedirects = false
+    }
+    val value = conn.getHeaderField(header)
+    conn.disconnect()
+    value
+} catch (t: Throwable) {
+    null
 }
 
 private fun writeU32be(b: ByteArray, off: Int, v: Int) {

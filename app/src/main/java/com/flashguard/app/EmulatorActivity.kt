@@ -33,8 +33,9 @@ class EmulatorActivity : AppCompatActivity() {
             return
         }
         val base = server.baseUrl
-        val loginPath = session.inventory.loginPage?.removePrefix("/") ?: ""
-        val home = base + loginPath
+        // The image's own login page when it ships one; otherwise the modelled login form
+        // FlashGuard generates (the original httpd's login page is a native binary here).
+        val home = base + server.loginUrl.removePrefix("/")
 
         b.textEmuTitle.text = session.fileName.ifBlank { "Firmware web UI" }
         b.textEmuStatus.text = "Loopback ${server.baseUrl}  •  ${session.inventory.features.size} feature groups  •  ${session.inventory.routes.size} pages found"

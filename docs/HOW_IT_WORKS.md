@@ -72,6 +72,19 @@ then serve those pages over **loopback only** (`127.0.0.1`, random port) with a 
 model the firmware's own CGI responses (`status`, `login`, `console`). The Android WebView loads
 that loopback URL, so you can click through the firmware's UI exactly as it ships - offline.
 
+The login works like the real device: every UI page redirects to the login page until the
+documented factory defaults (`admin` / `admin`) are submitted; a wrong password shows the image's
+own auth-error page (e.g. TP-Link's `AuthError.htm`), a correct one opens the real main page
+(frameset, menu, status). A page only counts as the login page if it actually contains a login
+form with a password input - pages that merely mention "password" (error/troubleshooting pages)
+are never mistaken for it. Some images ship *no* static login form at all: their HTTP server
+generates one (TP-Link VxWorks builds do this). For those, FlashGuard serves a **modelled login
+page** at `/__flashguard/login` and validates against the factory defaults, then lands on the
+image's real pages. Pages flattened into a single web-store directory still resolve under the
+paths the templates reference (`/userRpm/...`, `/frames/...`, `/images/...`), and the runtime
+data the original CGI would append to status/menu templates (`*Para` arrays, `visibleMenuList`)
+is injected as clearly-labelled modelled values so the pages render like the real device.
+
 ## 5. Compare against your hardware
 
 `HardwareMatrix` turns the facts into rows: architecture, flash size, flash type (NOR/NAND), boot

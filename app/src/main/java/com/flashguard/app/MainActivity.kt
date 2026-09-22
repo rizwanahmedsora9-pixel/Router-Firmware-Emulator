@@ -362,7 +362,7 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
             b.textEmulatorStatus.text = "Running on ${server.baseUrl}\n" +
-                "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login page: ${session.inventory.loginPage ?: "none"}\n" +
+                "Doc root: ${session.inventory.docRoot ?: "n/a"}  •  login: ${session.inventory.loginPage ?: "modelled by FlashGuard (no static form in image)"}\n" +
                 "Features found: ${session.inventory.features.size} groups, ${session.inventory.routes.size} pages"
             b.btnOpenEmulatorFull.isEnabled = true
             toast("Emulated web UI is up (loopback only).")

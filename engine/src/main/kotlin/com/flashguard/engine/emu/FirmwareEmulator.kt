@@ -127,6 +127,9 @@ class FirmwareEmulator(
             val fields = web.loginFormFields
             if (fields.isNotEmpty()) bootLog.add("[webui] login form fields: ${fields.joinToString(", ")}")
             bootLog.add("[webui] default credential hint: ${defaultCredHint(web.loginPage)}")
+        } else if (web.routes.isNotEmpty()) {
+            bootLog.add("[webui] no static login form in the image; the emulator serves a modelled login page " +
+                "(factory default: admin / admin, failure shows the image's own auth-error page)")
         } else if (vfs.isDir("/etc/init.d")) {
             notes.add("No login page found: this image may be a kernel-only build, or the UI lives on a JFFS2/UBIFS partition")
         }

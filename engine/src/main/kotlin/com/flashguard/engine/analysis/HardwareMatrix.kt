@@ -37,7 +37,7 @@ object HardwareMatrix {
         rows += flashTypeRow(identity, facts, device)
         rows += bootloaderRow(identity, device)
         rows += signatureRow(identity, device, unpack)
-        rows += wirelessRow(facts, device, unpack)
+        rows += wirelessRow(identity, facts, device, unpack)
         rows += usbRow(facts, device, unpack)
         rows += ramRow(facts, device)
         rows += deviceTreeRow(identity, device)
@@ -230,7 +230,8 @@ object HardwareMatrix {
         val needed = facts.requiredFlashMb
         val deviceMb = device.flashMb
         val fileMb = identity.totalSize / (1024.0 * 1024.0)
-        val fileText = "image rootfs ${needed?.let { String.format(java.util.Locale.US, "%.1f MB", it) } ?: "unknown"} " +
+        val sizeLabel = if (identity.primary == ImageFormat.TPLINK_IMG0) "image file" else "image rootfs"
+        val fileText = "$sizeLabel ${needed?.let { String.format(java.util.Locale.US, "%.1f MB", it) } ?: "unknown"} " +
             "(file ${Hex.humanBytes(identity.totalSize)})"
         return when {
             // Evidence, not absence of evidence: a file that is bigger than the whole flash chip
@@ -280,7 +281,7 @@ object HardwareMatrix {
             identity.layers.flatMap { it.flattenTree() }.any { it.format == ImageFormat.UBI || it.format == ImageFormat.UBIFS } ||
             facts.target?.contains("nand", true) == true
         val imageIsNor = !imageIsNand && (identity.primary == ImageFormat.SQUASHFS || identity.primary == ImageFormat.TRX ||
-            identity.primary == ImageFormat.NETGEAR_CHK || identity.primary == ImageFormat.TPLINK_BIN)
+            identity.primary == ImageFormat.NETGEAR_CHK || identity.primary == ImageFormat.TPLINK_BIN || identity.primary == ImageFormat.TPLINK_IMG0)
         val deviceNand = device.flashType.equals("NAND", true)
         val deviceNor = device.flashType.equals("NOR", true)
         return when {
@@ -324,12 +325,18 @@ object HardwareMatrix {
         val format = identity.primary
         val expectsCfe = device.bootloader.contains("CFE", true)
         val expectsUboot = device.bootloader.contains("U-Boot", true)
+        val expectsVxWorks = device.bootloader.contains("VxWorks", true)
         val imageLooksCfe = format == ImageFormat.TRX || format == ImageFormat.NETGEAR_CHK || format == ImageFormat.DLINK_SHR
         // Only the PRIMARY container decides the boot path: vendor containers (Netgear CHK,
         // ASUS .zip, TP-Link .bin) routinely carry a uImage-format *kernel* inside, which is
         // normal and does not make the image "U-Boot style".
         val imageLooksUboot = format == ImageFormat.UBOOT_LEGACY || format == ImageFormat.UBOOT_FIT
         return when {
+            expectsVxWorks && format == ImageFormat.TPLINK_IMG0 -> HardwareFeature(
+                "Bootloader format", "image is TP-Link IMG0/VxWorks", "device uses ${device.bootloader}",
+                FeatureVerdict.COMPATIBLE,
+                "The image wrapper matches the stock TP-Link/VxWorks upgrade format used by this device.",
+            )
             expectsCfe && imageLooksUboot -> HardwareFeature(
                 "Bootloader format", "image is a U-Boot style image", "device uses CFE",
                 FeatureVerdict.INCOMPATIBLE,
@@ -391,7 +398,7 @@ object HardwareMatrix {
         }
     }
 
-    private fun wirelessRow(facts: FirmwareFacts, device: DeviceProfile, unpack: UnpackResult): HardwareFeature {
+    private fun wirelessRow(identity: ImageIdentity, facts: FirmwareFacts, device: DeviceProfile, unpack: UnpackResult): HardwareFeature {
         val imageDrivers = facts.wirelessDrivers
         val deviceChips = device.wifiChips
         // HONESTY GATE: "the image ships no wireless drivers" is only evidence when the image was
@@ -409,6 +416,15 @@ object HardwareMatrix {
                     "static phone-side check - it is NOT a hardware mismatch.",
                 "Unpack the image on a PC (binwalk / unsquashfs) to list its wireless modules, or use a build this app can read " +
                     "(squashfs, tar.gz, uImage) and re-run the check.",
+            )
+        }
+        if (identity.primary == ImageFormat.TPLINK_IMG0 && imageDrivers.isEmpty()) {
+            return HardwareFeature(
+                "Wi-Fi hardware", "VxWorks stock image (wireless drivers are monolithic, not .ko modules)",
+                "device has ${deviceChips.ifEmpty { listOf("unknown wireless chipset") }.joinToString(", ")}",
+                FeatureVerdict.UNVERIFIED,
+                "This is a VxWorks/IMG0 stock firmware, so Wi-Fi support is built into the OS image rather than exposed as Linux kernel modules. The module-list check is not applicable.",
+                "Only use it if it is the vendor file for the exact model/revision on the label.",
             )
         }
         if (deviceChips.isEmpty()) {
@@ -483,7 +499,9 @@ object HardwareMatrix {
         val targetRam = when {
             facts.target?.contains("mt7621") == true -> 64
             facts.target?.contains("mt76x8") == true -> 32
+            facts.target?.contains("ar9331") == true -> 16
             facts.target?.contains("ath79") == true -> 32
+            facts.target?.contains("ar71xx") == true -> 16
             facts.target?.contains("ramips") == true -> 32
             facts.target?.contains("ipq") == true -> 128
             facts.target?.contains("bcm53xx") == true -> 128
@@ -519,6 +537,16 @@ object HardwareMatrix {
     private fun deviceTreeRow(identity: ImageIdentity, device: DeviceProfile): HardwareFeature {
         val modelHints = identity.evidence.filter { it.startsWith("FDT compatible") || it.startsWith("FDT model") || it.startsWith("Kernel machine") }
         if (modelHints.isEmpty()) {
+            val imageModel = identity.model
+            val modelToken = device.model.lowercase().replace("-", "")
+            val imageToken = imageModel?.lowercase()?.replace("-", "") ?: ""
+            if (imageModel != null && modelToken.isNotBlank() && imageToken.contains(modelToken)) {
+                return HardwareFeature(
+                    "Device tree / board name", "image model: $imageModel", "selected: ${device.display}",
+                    FeatureVerdict.COMPATIBLE,
+                    "No Linux device tree is present, but the firmware identity/filename names the selected router model.",
+                )
+            }
             return HardwareFeature(
                 "Device tree / board name", "no device-tree model found", "selected: ${device.display}",
                 FeatureVerdict.UNVERIFIED,
@@ -551,6 +579,11 @@ object HardwareMatrix {
             unpack.vfs.exists("/sysupgrade-")
         val hasWebUi = unpack.vfs.findWebRoots().isNotEmpty()
         return when {
+            identity.primary == ImageFormat.TPLINK_IMG0 -> HardwareFeature(
+                "Install method", "TP-Link stock IMG0/VxWorks upgrade image", "device: ${device.display}",
+                FeatureVerdict.COMPATIBLE,
+                "Use the stock TP-Link web upgrade/recovery path for this exact hardware revision; this is not an OpenWrt sysupgrade package.",
+            )
             sysupgrade -> HardwareFeature(
                 "Install method", "image is a sysupgrade package", "device currently running: unknown firmware",
                 FeatureVerdict.PARTIAL,
@@ -677,6 +710,14 @@ object HardwareMatrix {
                     "'needs verification' instead of being guessed at.",
                 "Unpack it on a PC (binwalk / unsquashfs) or use a build with a container this app can read (squashfs, tar.gz, " +
                     "uImage, TRX), then re-run the check for content-level evidence.",
+            )
+        }
+        if (identity.primary == ImageFormat.TPLINK_IMG0) {
+            return HardwareFeature(
+                "Static analysis coverage", "TP-Link IMG0 parsed; VxWorks web UI store extracted",
+                "engine coverage: IMG0 headers + stock web UI + size checks",
+                FeatureVerdict.COMPATIBLE,
+                "The official VxWorks container and its Wind River web store were recognised and decoded. Native VxWorks binaries are not executed by the static emulator, but the upgrade wrapper and admin UI are no longer opaque.",
             )
         }
         return if (unsupported.isEmpty()) {

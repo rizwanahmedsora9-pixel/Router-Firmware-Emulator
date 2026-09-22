@@ -304,6 +304,18 @@ fun main(args: Array<String>) {
         val id = FirmwareIdentifier.identify(ByteArray(0), "empty.bin")
         r.expect(id.primary == ImageFormat.EMPTY, "expected EMPTY")
     }
+    r.check("identifies official TL-WR720N v2 IMG0/VxWorks firmware and 2 MB device profile") {
+        val file = java.io.File("Tplink Wr720n 2/wr720nv2-eu-up.bin")
+        if (file.exists()) {
+            val id = FirmwareIdentifier.identify(file.readBytes(), file.name)
+            r.expect(id.primary == ImageFormat.TPLINK_IMG0, "expected TP-Link IMG0, got ${id.primary}")
+            r.expect(id.vendor == com.flashguard.engine.core.Vendor.TP_LINK, "expected TP-Link vendor, got ${id.vendor}")
+            r.expect(id.model?.contains("TL-WR720N", true) == true, "expected WR720N model, got ${id.model}")
+            val device = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+            r.expect(device.flashMb == 2 && device.ramMb == 16, "v2 profile must be 2 MB flash / 16 MB RAM, got ${device.flashMb}/${device.ramMb}")
+            r.expect(device.soc.contains("AR9331", true), "v2 profile must be AR9331, got ${device.soc}")
+        }
+    }
 
     // ------------------------------------------------------------------ honesty: missing evidence
     r.check("an unreadable image is reported as unverifiable, never as a hardware mismatch") {
@@ -342,7 +354,7 @@ fun main(args: Array<String>) {
         // Silence about *content* must not silence what the bytes do prove: a file larger than the
         // whole flash chip cannot be written, whatever is inside it - that row stays red.
         val blob = opaqueBlob(6 * 1024 * 1024)
-        val device = DeviceDb.byId("tplink-tl-wr720n-v2")!! // 4 MB NOR
+        val device = DeviceDb.byId("tplink-tl-wr720n-v2")!! // 2 MB NOR
         val session = FirmwareLab.analyze(blob, "too-big.bin", device)
         val flash = session.report.features.first { it.feature == "Flash size" }
         r.expect(flash.verdict == FeatureVerdict.INCOMPATIBLE, "a file bigger than the flash must stay RED: ${flash.why}")
@@ -492,7 +504,7 @@ fun main(args: Array<String>) {
         r.expect(session.report.redFlags().isNotEmpty(), "no red flags raised")
     }
 
-    r.check("WR720N v1 (MT7620) image boots; matches v1 + generic MT7620; RED on the v2 (MT7628) board") {
+    r.check("WR720N v1 (MT7620) image boots; matches v1 + generic MT7620; RED on the stock v2 (AR9331/2 MB) board") {
         val img = buildWr720nImage("MT7620AT", "V1", "mt7610")
         val v1 = DeviceDb.byId("tplink-tl-wr720n-v1")!!
         val v2 = DeviceDb.byId("tplink-tl-wr720n-v2")!!
@@ -509,25 +521,28 @@ fun main(args: Array<String>) {
         val sg = FirmwareLab.analyze(img, "TL-WR720N_v1.1.4_Build_20180101.bin", genericMt7620)
         val socg = sg.report.features.first { it.feature.startsWith("SoC family") }
         r.expect(socg.verdict == FeatureVerdict.COMPATIBLE, "SoC row on the generic MT7620 device: ${socg.why}")
-        // v2/v3/v4 boards carry an MT7628AN - a v1 (MT7620) kernel cannot run on them.
+        // The stock v2 device is AR9331/2 MB, so a MT7620 board-spin image cannot run on it.
         val s2 = FirmwareLab.analyze(img, "TL-WR720N_v1.1.4_Build_20180101.bin", v2)
         val soc2 = s2.report.features.first { it.feature.startsWith("SoC family") }
-        r.expect(soc2.verdict == FeatureVerdict.INCOMPATIBLE, "v1 image on the v2 (MT7628) device must be RED: ${soc2.why}")
+        r.expect(soc2.verdict == FeatureVerdict.INCOMPATIBLE, "MT7620 image on the stock v2 (AR9331) device must be RED: ${soc2.why}")
         r.expect(s2.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH, got ${s2.report.verdict}")
     }
 
-    r.check("WR720N v2 (MT7628) image: RED on the v1 (MT7620) board, clean on v2 + generic MT7628") {
-        val img = buildWr720nImage("MT7628AN", "V2", "mt76x2")
+    r.check("MT7628 WR720N board image: RED on v1 (MT7620) and stock v2 (AR9331), clean on MT7628 profiles") {
+        val img = buildWr720nImage("MT7628AN", "V3", "mt76x2")
         val v1 = DeviceDb.byId("tplink-tl-wr720n-v1")!!
         val v2 = DeviceDb.byId("tplink-tl-wr720n-v2")!!
+        val v3 = DeviceDb.byId("tplink-tl-wr720n-v3")!!
         val v4 = DeviceDb.byId("tplink-tl-wr720n-v4")!!
         val genericMt7628 = DeviceDb.byId("generic-mt7628-32-4")!!
-        val s1 = FirmwareLab.analyze(img, "TL-WR720N_v2.0.0_Build_20190505.bin", v1)
-        val soc1 = s1.report.features.first { it.feature.startsWith("SoC family") }
-        r.expect(soc1.verdict == FeatureVerdict.INCOMPATIBLE, "v2 image on the v1 (MT7620) device must be RED: ${soc1.why}")
-        r.expect(s1.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH, got ${s1.report.verdict}")
-        for (d in listOf(v2, v4, genericMt7628)) {
-            val s = FirmwareLab.analyze(img, "TL-WR720N_v2.0.0_Build_20190505.bin", d)
+        for (d in listOf(v1, v2)) {
+            val sBad = FirmwareLab.analyze(img, "TL-WR720N_v3.0.0_Build_20190505.bin", d)
+            val socBad = sBad.report.features.first { it.feature.startsWith("SoC family") }
+            r.expect(socBad.verdict == FeatureVerdict.INCOMPATIBLE, "MT7628 image on ${d.id} must be RED: ${socBad.why}")
+            r.expect(sBad.report.verdict == com.flashguard.engine.core.RiskVerdict.DO_NOT_FLASH, "expected DO NOT FLASH on ${d.id}, got ${sBad.report.verdict}")
+        }
+        for (d in listOf(v3, v4, genericMt7628)) {
+            val s = FirmwareLab.analyze(img, "TL-WR720N_v3.0.0_Build_20190505.bin", d)
             val soc = s.report.features.first { it.feature.startsWith("SoC family") }
             r.expect(soc.verdict == FeatureVerdict.COMPATIBLE, "SoC row on ${d.id}: ${soc.why}")
             r.expect(s.report.redFlags().isEmpty(), "false reds on ${d.id}: " + s.report.redFlags().joinToString { it.feature })
